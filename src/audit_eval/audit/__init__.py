@@ -29,6 +29,10 @@ from audit_eval.audit.storage import (
     FormalAuditStorageAdapter,
     InMemoryFormalAuditStorageAdapter,
 )
+from audit_eval.audit.lite import (
+    InMemoryReplayRepository,
+    build_in_memory_replay_query_context,
+)
 from audit_eval.audit.writer import (
     get_default_storage_adapter,
     persist_audit_records,
@@ -47,6 +51,7 @@ __all__ = [
     "GraphSnapshotGateway",
     "GraphSnapshotMissing",
     "InMemoryFormalAuditStorageAdapter",
+    "InMemoryReplayRepository",
     "ManifestBindingError",
     "ManifestGateway",
     "ReplayModeError",
@@ -56,6 +61,7 @@ __all__ = [
     "ReplayRepository",
     "ReplayView",
     "SnapshotLoadError",
+    "build_in_memory_replay_query_context",
     "get_default_storage_adapter",
     "persist_audit_records",
     "persist_replay_records",
