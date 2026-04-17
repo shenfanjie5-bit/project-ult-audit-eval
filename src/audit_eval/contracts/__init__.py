@@ -5,6 +5,7 @@ from audit_eval.contracts.replay_draft import (
     AuditRecordDraft,
     ReplayBundleFields,
     ReplayRecordDraft,
+    ReplayViewDraft,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "CyclePublishManifestDraft",
     "ReplayBundleFields",
     "ReplayRecordDraft",
+    "ReplayViewDraft",
 ]
