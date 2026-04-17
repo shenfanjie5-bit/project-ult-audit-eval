@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from audit_eval.contracts.manifest_draft import CyclePublishManifestDraft
 from audit_eval.contracts.replay_draft import AuditRecordDraft, ReplayRecordDraft
@@ -48,10 +49,41 @@ def load_replay_record(path: Path, object_ref: str) -> ReplayRecordDraft:
     return matches[0]
 
 
-def _snapshot_path(cycle_fixture: Path, object_ref: str, snapshot_ref: str) -> Path:
-    if snapshot_ref.endswith(".json"):
-        return cycle_fixture / snapshot_ref
-    return cycle_fixture / "formal_snapshots" / f"{object_ref}.json"
+def _fixture_path(cycle_fixture: Path, relative_ref: str) -> Path:
+    relative_path = Path(relative_ref)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError(f"Snapshot ref escapes fixture root: {relative_ref}")
+    return cycle_fixture / relative_path
+
+
+def _snapshot_path(cycle_fixture: Path, snapshot_ref: str) -> Path:
+    parsed_ref = urlparse(snapshot_ref)
+
+    if parsed_ref.scheme == "snapshot":
+        if parsed_ref.netloc != cycle_fixture.name:
+            raise ValueError(
+                "Snapshot ref cycle does not match loaded fixture cycle"
+            )
+
+        ref_path = parsed_ref.path.lstrip("/")
+        if not ref_path:
+            raise ValueError(f"Snapshot ref has no fixture path: {snapshot_ref}")
+
+        if ref_path.endswith(".json"):
+            relative_ref = ref_path
+        elif ref_path.startswith("formal_snapshots/"):
+            relative_ref = f"{ref_path}.json"
+        else:
+            relative_ref = f"formal_snapshots/{ref_path}.json"
+        return _fixture_path(cycle_fixture, relative_ref)
+
+    if parsed_ref.scheme:
+        raise ValueError(f"Unsupported snapshot ref scheme: {parsed_ref.scheme}")
+    if not snapshot_ref.endswith(".json"):
+        raise ValueError(
+            f"Local snapshot refs must point to JSON fixtures: {snapshot_ref}"
+        )
+    return _fixture_path(cycle_fixture, snapshot_ref)
 
 
 def reconstruct_replay_view(
@@ -96,14 +128,18 @@ def reconstruct_replay_view(
                 f"Replay snapshot ref for {formal_object_ref} does not match "
                 "manifest"
             )
-        snapshot_path = _snapshot_path(
-            cycle_fixture,
-            formal_object_ref,
-            manifest_snapshot_ref,
-        )
+        snapshot_path = _snapshot_path(cycle_fixture, manifest_snapshot_ref)
+        snapshot_data = _read_json(snapshot_path)
+        if not isinstance(snapshot_data, dict):
+            raise ValueError(f"Expected snapshot object in {snapshot_path}")
+        if snapshot_data.get("snapshot_ref") != manifest_snapshot_ref:
+            raise ValueError(
+                f"Snapshot file {snapshot_path} is not bound to manifest ref "
+                f"{manifest_snapshot_ref}"
+            )
         historical_formal_objects[formal_object_ref] = {
             "source_ref": manifest_snapshot_ref,
-            "data": _read_json(snapshot_path),
+            "data": snapshot_data,
         }
 
     return {
@@ -141,4 +177,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

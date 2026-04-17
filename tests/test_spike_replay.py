@@ -45,6 +45,66 @@ def test_reconstruct_returns_manifest_bound_snapshots() -> None:
         assert historical_object["source_ref"] in manifest_refs
 
 
+def test_manifest_ref_selects_snapshot_file_not_object_name(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    cycle_fixture = fixture_copy / "cycle_20260410"
+
+    manifest_snapshot_ref = (
+        "snapshot://cycle_20260410/formal_snapshots/"
+        "recommendation_manifest_bound.json"
+    )
+    manifest_path = cycle_fixture / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["snapshot_refs"]["recommendation"] = manifest_snapshot_ref
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    replay_records_path = cycle_fixture / "replay_records.json"
+    replay_records = json.loads(replay_records_path.read_text(encoding="utf-8"))
+    for replay_record in replay_records:
+        if replay_record["object_ref"] == "recommendation":
+            replay_record["formal_snapshot_refs"][
+                "recommendation"
+            ] = manifest_snapshot_ref
+    replay_records_path.write_text(json.dumps(replay_records), encoding="utf-8")
+
+    bound_snapshot_path = (
+        cycle_fixture / "formal_snapshots" / "recommendation_manifest_bound.json"
+    )
+    bound_snapshot = {
+        "snapshot_ref": manifest_snapshot_ref,
+        "object_ref": "recommendation",
+        "as_of": "2026-04-10",
+        "recommendation": {
+            "action": "raise_cash",
+            "confidence": 0.91,
+            "source_world_state_ref": "snapshot://cycle_20260410/world_state",
+        },
+    }
+    bound_snapshot_path.write_text(json.dumps(bound_snapshot), encoding="utf-8")
+
+    replay_view = reconstruct_replay_view(
+        cycle_id="cycle_20260410",
+        object_ref="recommendation",
+        fixture_root=fixture_copy,
+    )
+
+    recommendation = replay_view["historical_formal_objects"]["recommendation"]
+    assert recommendation["source_ref"] == manifest_snapshot_ref
+    assert recommendation["data"]["snapshot_ref"] == manifest_snapshot_ref
+    assert recommendation["data"]["recommendation"]["action"] == "raise_cash"
+
+    bound_snapshot["snapshot_ref"] = "snapshot://cycle_20260410/recommendation"
+    bound_snapshot_path.write_text(json.dumps(bound_snapshot), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not bound to manifest ref"):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
 def test_reconstruct_does_not_call_network() -> None:
     replay_view = reconstruct_replay_view(
         cycle_id="cycle_20260410",
