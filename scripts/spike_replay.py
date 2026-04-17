@@ -5,16 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from audit_eval.audit.query import ReplayQueryContext, replay_cycle_object
+from audit_eval.contracts.audit_record import AuditRecord
 from audit_eval.contracts.manifest_draft import CyclePublishManifestDraft
-from audit_eval.contracts.replay_draft import (
-    AuditRecordDraft,
-    ReplayRecordDraft,
-    ReplayViewDraft,
-)
+from audit_eval.contracts.replay_record import ReplayRecord
 
 
 def _read_json(path: Path) -> Any:
@@ -34,16 +33,16 @@ def load_manifest(path: Path) -> CyclePublishManifestDraft:
     return CyclePublishManifestDraft.model_validate(_read_json(path))
 
 
-def load_audit_records(path: Path) -> list[AuditRecordDraft]:
+def load_audit_records(path: Path) -> list[AuditRecord]:
     """Load draft audit records from a fixture JSON array."""
 
     records = _read_json(path)
     if not isinstance(records, list):
         raise ValueError(f"Expected audit record array in {path}")
-    return [AuditRecordDraft.model_validate(record) for record in records]
+    return [AuditRecord.model_validate(record) for record in records]
 
 
-def load_replay_record(path: Path, object_ref: str) -> ReplayRecordDraft:
+def load_replay_record(path: Path, object_ref: str) -> ReplayRecord:
     """Load the replay record matching one object reference."""
 
     records = _read_json(path)
@@ -51,7 +50,7 @@ def load_replay_record(path: Path, object_ref: str) -> ReplayRecordDraft:
         raise ValueError(f"Expected replay record array in {path}")
 
     matches = [
-        ReplayRecordDraft.model_validate(record)
+        ReplayRecord.model_validate(record)
         for record in records
         if record.get("object_ref") == object_ref
     ]
@@ -136,56 +135,117 @@ def _dagster_run_summary_path(cycle_fixture: Path, dagster_run_id: str) -> Path:
     return _fixture_path(cycle_fixture, f"dagster_runs/{dagster_run_id}.json")
 
 
-def load_graph_snapshot_summary(
-    cycle_fixture: Path,
-    graph_snapshot_ref: str | None,
-) -> dict[str, Any] | None:
-    """Load a graph snapshot summary referenced by the replay record, if present."""
+class FixtureReplayRepository:
+    """Fixture-backed repository used by the spike CLI wrapper."""
 
-    if graph_snapshot_ref is None:
-        return None
+    def __init__(self, cycle_fixture: Path) -> None:
+        self.cycle_fixture = cycle_fixture
 
-    graph_path = _graph_snapshot_path(cycle_fixture, graph_snapshot_ref)
-    graph_summary = _read_required_json(
-        graph_path,
-        f"graph snapshot summary for {graph_snapshot_ref}",
+    def get_replay_record(
+        self,
+        cycle_id: str,
+        object_ref: str,
+    ) -> ReplayRecord | None:
+        if self.cycle_fixture.name != cycle_id:
+            return None
+
+        records = _read_required_json(
+            self.cycle_fixture / "replay_records.json",
+            "replay records",
+        )
+        if not isinstance(records, list):
+            raise ValueError(
+                f"Expected replay record array in {self.cycle_fixture}"
+            )
+
+        matches = [
+            ReplayRecord.model_validate(record)
+            for record in records
+            if record.get("cycle_id") == cycle_id
+            and record.get("object_ref") == object_ref
+        ]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Expected at most one replay record for {cycle_id}/{object_ref}"
+            )
+        return matches[0] if matches else None
+
+    def get_audit_records(self, record_ids: Sequence[str]) -> list[AuditRecord]:
+        records = load_audit_records(self.cycle_fixture / "audit_records.json")
+        requested_ids = set(record_ids)
+        return [record for record in records if record.record_id in requested_ids]
+
+
+class FixtureManifestGateway:
+    """Fixture-backed cycle_publish_manifest gateway."""
+
+    def __init__(self, fixture_root: Path) -> None:
+        self.fixture_root = fixture_root
+
+    def load(self, cycle_id: str) -> CyclePublishManifestDraft:
+        return load_manifest(self.fixture_root / cycle_id / "manifest.json")
+
+
+class FixtureFormalSnapshotGateway:
+    """Fixture-backed formal snapshot gateway."""
+
+    def __init__(self, cycle_fixture: Path) -> None:
+        self.cycle_fixture = cycle_fixture
+
+    def load_snapshot(self, snapshot_ref: str) -> dict[str, Any]:
+        snapshot_path = _snapshot_path(self.cycle_fixture, snapshot_ref)
+        snapshot = _read_required_json(
+            snapshot_path,
+            f"formal snapshot for {snapshot_ref}",
+        )
+        if not isinstance(snapshot, dict):
+            raise ValueError(f"Expected snapshot object in {snapshot_path}")
+        return snapshot
+
+
+class FixtureGraphSnapshotGateway:
+    """Fixture-backed graph snapshot gateway."""
+
+    def __init__(self, cycle_fixture: Path) -> None:
+        self.cycle_fixture = cycle_fixture
+
+    def load(self, graph_snapshot_ref: str) -> dict[str, Any]:
+        graph_path = _graph_snapshot_path(self.cycle_fixture, graph_snapshot_ref)
+        graph_snapshot = _read_required_json(
+            graph_path,
+            f"graph snapshot summary for {graph_snapshot_ref}",
+        )
+        if not isinstance(graph_snapshot, dict):
+            raise ValueError(f"Expected graph snapshot summary object in {graph_path}")
+        return graph_snapshot
+
+
+class FixtureDagsterRunGateway:
+    """Fixture-backed Dagster run summary gateway."""
+
+    def __init__(self, cycle_fixture: Path) -> None:
+        self.cycle_fixture = cycle_fixture
+
+    def load_summary(self, dagster_run_id: str) -> dict[str, Any]:
+        dagster_path = _dagster_run_summary_path(self.cycle_fixture, dagster_run_id)
+        dagster_summary = _read_required_json(
+            dagster_path,
+            f"Dagster run summary for {dagster_run_id}",
+        )
+        if not isinstance(dagster_summary, dict):
+            raise ValueError(f"Expected Dagster run summary object in {dagster_path}")
+        return dagster_summary
+
+
+def _fixture_context(fixture_root: Path, cycle_id: str) -> ReplayQueryContext:
+    cycle_fixture = fixture_root / cycle_id
+    return ReplayQueryContext(
+        repository=FixtureReplayRepository(cycle_fixture),
+        manifest_gateway=FixtureManifestGateway(fixture_root),
+        formal_gateway=FixtureFormalSnapshotGateway(cycle_fixture),
+        dagster_gateway=FixtureDagsterRunGateway(cycle_fixture),
+        graph_gateway=FixtureGraphSnapshotGateway(cycle_fixture),
     )
-    if not isinstance(graph_summary, dict):
-        raise ValueError(f"Expected graph snapshot summary object in {graph_path}")
-    if graph_summary.get("graph_snapshot_ref") != graph_snapshot_ref:
-        raise ValueError(
-            f"Graph snapshot summary {graph_path} is not bound to "
-            f"{graph_snapshot_ref}"
-        )
-    if graph_summary.get("cycle_id") != cycle_fixture.name:
-        raise ValueError(
-            "Graph snapshot summary cycle_id does not match loaded fixture cycle"
-        )
-    return graph_summary
-
-
-def load_dagster_run_summary(
-    cycle_fixture: Path,
-    dagster_run_id: str,
-) -> dict[str, Any]:
-    """Load the Dagster run history summary referenced by the replay record."""
-
-    dagster_path = _dagster_run_summary_path(cycle_fixture, dagster_run_id)
-    dagster_summary = _read_required_json(
-        dagster_path,
-        f"Dagster run summary for {dagster_run_id}",
-    )
-    if not isinstance(dagster_summary, dict):
-        raise ValueError(f"Expected Dagster run summary object in {dagster_path}")
-    if dagster_summary.get("run_id") != dagster_run_id:
-        raise ValueError(
-            f"Dagster run summary {dagster_path} is not bound to {dagster_run_id}"
-        )
-    if dagster_summary.get("cycle_id") != cycle_fixture.name:
-        raise ValueError(
-            "Dagster run summary cycle_id does not match loaded fixture cycle"
-        )
-    return dagster_summary
 
 
 def reconstruct_replay_view(
@@ -195,76 +255,12 @@ def reconstruct_replay_view(
 ) -> dict[str, Any]:
     """Rebuild a read-history replay view from offline fixture files."""
 
-    cycle_fixture = fixture_root / cycle_id
-    manifest = load_manifest(cycle_fixture / "manifest.json")
-    if manifest.published_cycle_id != cycle_id:
-        raise ValueError(
-            "Manifest published_cycle_id does not match requested cycle_id"
-        )
-
-    replay_record = load_replay_record(
-        cycle_fixture / "replay_records.json",
-        object_ref,
-    )
-    if replay_record.cycle_id != cycle_id:
-        raise ValueError("Replay record cycle_id does not match requested cycle_id")
-    if replay_record.manifest_cycle_id != manifest.published_cycle_id:
-        raise ValueError("Replay record is not bound to the loaded manifest")
-
-    audit_records = load_audit_records(cycle_fixture / "audit_records.json")
-    audit_records_by_id = {record.record_id: record for record in audit_records}
-    replay_audit_records = []
-    for record_id in replay_record.audit_record_ids:
-        try:
-            replay_audit_records.append(audit_records_by_id[record_id])
-        except KeyError as exc:
-            raise KeyError(f"Missing audit_record id {record_id}") from exc
-
-    historical_formal_objects: dict[str, dict[str, Any]] = {}
-    for formal_object_ref, replay_snapshot_ref in (
-        replay_record.formal_snapshot_refs.items()
-    ):
-        manifest_snapshot_ref = manifest.snapshot_refs[formal_object_ref]
-        if replay_snapshot_ref != manifest_snapshot_ref:
-            raise ValueError(
-                f"Replay snapshot ref for {formal_object_ref} does not match "
-                "manifest"
-            )
-        snapshot_path = _snapshot_path(cycle_fixture, manifest_snapshot_ref)
-        snapshot_data = _read_json(snapshot_path)
-        if not isinstance(snapshot_data, dict):
-            raise ValueError(f"Expected snapshot object in {snapshot_path}")
-        if snapshot_data.get("snapshot_ref") != manifest_snapshot_ref:
-            raise ValueError(
-                f"Snapshot file {snapshot_path} is not bound to manifest ref "
-                f"{manifest_snapshot_ref}"
-            )
-        historical_formal_objects[formal_object_ref] = {
-            "source_ref": manifest_snapshot_ref,
-            "data": snapshot_data,
-        }
-
-    graph_snapshot_summary = load_graph_snapshot_summary(
-        cycle_fixture,
-        replay_record.graph_snapshot_ref,
-    )
-    dagster_run_summary = load_dagster_run_summary(
-        cycle_fixture,
-        replay_record.dagster_run_id,
-    )
-
-    replay_view = ReplayViewDraft(
+    replay_view = replay_cycle_object(
         cycle_id=cycle_id,
         object_ref=object_ref,
-        replay_record=replay_record,
-        audit_records=replay_audit_records,
-        manifest_snapshot_set=dict(manifest.snapshot_refs),
-        historical_formal_objects=historical_formal_objects,
-        graph_snapshot_ref=replay_record.graph_snapshot_ref,
-        graph_snapshot_summary=graph_snapshot_summary,
-        dagster_run_summary=dagster_run_summary,
+        context=_fixture_context(fixture_root, cycle_id),
     )
-    return replay_view.model_dump(mode="json")
+    return replay_view.to_dict()
 
 
 def main(argv: list[str] | None = None) -> int:

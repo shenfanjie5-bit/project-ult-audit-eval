@@ -180,6 +180,7 @@ def test_persist_audit_records_rejects_metadata_forbidden_field() -> None:
     ("field_name", "value", "match"),
     [
         ("replay_mode", cast(Any, "rerun_model"), "replay_mode"),
+        ("cycle_id", "cycle_other", "cycle_id"),
         ("manifest_cycle_id", "", "manifest_cycle_id"),
     ],
 )
