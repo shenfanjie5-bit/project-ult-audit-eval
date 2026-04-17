@@ -31,8 +31,20 @@ class AuditWriteBundle(BaseModel):
 
         assert_no_forbidden_write(self.model_dump(mode="python"))
 
-        audit_record_ids = set(self.audit_records_by_id())
+        audit_records_by_id = self.audit_records_by_id()
+        for audit_record in self.audit_records:
+            if audit_record.cycle_id != self.manifest_cycle_id:
+                raise ValueError(
+                    "AuditRecord.cycle_id must match "
+                    "AuditWriteBundle.manifest_cycle_id"
+                )
+
         for replay_record in self.replay_records:
+            if replay_record.cycle_id != self.manifest_cycle_id:
+                raise ValueError(
+                    "ReplayRecord.cycle_id must match "
+                    "AuditWriteBundle.manifest_cycle_id"
+                )
             if replay_record.manifest_cycle_id != self.manifest_cycle_id:
                 raise ValueError(
                     "ReplayRecord.manifest_cycle_id must match "
@@ -42,13 +54,25 @@ class AuditWriteBundle(BaseModel):
             missing_record_ids = [
                 record_id
                 for record_id in replay_record.audit_record_ids
-                if record_id not in audit_record_ids
+                if record_id not in audit_records_by_id
             ]
             if missing_record_ids:
                 missing = ", ".join(missing_record_ids)
                 raise ValueError(
                     "ReplayRecord.audit_record_ids reference missing "
                     f"AuditRecord.record_id values: {missing}"
+                )
+            mismatched_record_ids = [
+                record_id
+                for record_id in replay_record.audit_record_ids
+                if audit_records_by_id[record_id].cycle_id != replay_record.cycle_id
+            ]
+            if mismatched_record_ids:
+                mismatched = ", ".join(mismatched_record_ids)
+                raise ValueError(
+                    "ReplayRecord.audit_record_ids reference AuditRecord rows "
+                    "from a different cycle_id: "
+                    f"{mismatched}"
                 )
         return self
 

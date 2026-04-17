@@ -70,6 +70,22 @@ def test_write_bundle_rejects_replay_manifest_mismatch() -> None:
         AuditWriteBundle.model_validate(payload)
 
 
+def test_write_bundle_rejects_audit_record_cycle_mismatch() -> None:
+    payload = _bundle_payload()
+    payload["audit_records"][0]["cycle_id"] = "cycle_other"
+
+    with pytest.raises(ValidationError, match="AuditRecord.cycle_id"):
+        AuditWriteBundle.model_validate(payload)
+
+
+def test_write_bundle_rejects_replay_record_cycle_mismatch() -> None:
+    payload = _bundle_payload()
+    payload["replay_records"][0]["cycle_id"] = "cycle_other"
+
+    with pytest.raises(ValidationError, match="ReplayRecord.cycle_id"):
+        AuditWriteBundle.model_validate(payload)
+
+
 def test_write_bundle_rejects_forbidden_write_fields_recursively() -> None:
     payload = _bundle_payload()
     payload["metadata"] = {
