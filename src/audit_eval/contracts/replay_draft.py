@@ -69,8 +69,10 @@ class ReplayRecordDraft(BaseModel):
     audit_record_ids: list[str]
     manifest_cycle_id: str
     formal_snapshot_refs: dict[str, str]
+    graph_snapshot_ref: str | None
     dagster_run_id: str
     replay_mode: Literal["read_history"]
+    created_at: datetime
 
 
 __all__ = [
@@ -78,4 +80,3 @@ __all__ = [
     "ReplayBundleFields",
     "ReplayRecordDraft",
 ]
-
