@@ -3,10 +3,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
-from pydantic import ValidationError
-
-from audit_eval._boundary import BoundaryViolationError
 from audit_eval.contracts import AuditRecord, AuditWriteBundle, ReplayRecord
 
 
@@ -52,70 +48,3 @@ def test_write_bundle_accepts_fixture_payloads_and_builds_indexes() -> None:
         bundle.replay_records_by_object_ref()["recommendation"],
         ReplayRecord,
     )
-
-
-def test_write_bundle_rejects_missing_referenced_audit_record_id() -> None:
-    payload = _bundle_payload()
-    payload["replay_records"][1]["audit_record_ids"].append("audit-missing")
-
-    with pytest.raises(ValidationError, match="audit-missing"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_replay_manifest_mismatch() -> None:
-    payload = _bundle_payload()
-    payload["replay_records"][0]["manifest_cycle_id"] = "cycle_other"
-
-    with pytest.raises(ValidationError, match="manifest_cycle_id"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_replay_cycle_mismatch() -> None:
-    payload = _bundle_payload()
-    payload["replay_records"][0]["cycle_id"] = "cycle_other"
-
-    with pytest.raises(ValidationError, match="cycle_id"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_referenced_audit_record_cycle_mismatch() -> None:
-    payload = _bundle_payload()
-    payload["audit_records"][0]["cycle_id"] = "cycle_other"
-
-    with pytest.raises(ValidationError, match="different cycle"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_replay_reference_outside_snapshot_refs() -> None:
-    payload = _bundle_payload()
-    payload["replay_records"][0]["audit_record_ids"].append(
-        "audit-cycle_20260410-L7-recommendation"
-    )
-
-    with pytest.raises(ValidationError, match="outside formal_snapshot_refs"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_replay_missing_own_object_audit_record() -> None:
-    payload = _bundle_payload()
-    payload["replay_records"][1]["audit_record_ids"] = [
-        "audit-cycle_20260410-L4-world_state"
-    ]
-
-    with pytest.raises(ValidationError, match="ReplayRecord.object_ref"):
-        AuditWriteBundle.model_validate(payload)
-
-
-def test_write_bundle_rejects_forbidden_write_fields_recursively() -> None:
-    payload = _bundle_payload()
-    payload["metadata"] = {
-        "review": {
-            "feature_weight_multiplier": 1.2,
-        },
-    }
-
-    with pytest.raises(
-        BoundaryViolationError,
-        match=r"\$\.metadata\.review\.feature_weight_multiplier",
-    ):
-        AuditWriteBundle.model_validate(payload)

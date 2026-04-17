@@ -21,9 +21,8 @@ def persist_audit_records(
     """Persist formal audit records through an explicit storage adapter."""
 
     validated_bundle = _revalidate_write_bundle(write_bundle)
+    _assert_write_bundle_boundary(validated_bundle)
     records = list(validated_bundle.audit_records)
-    for record in records:
-        assert_no_forbidden_write(record.model_dump(mode="json"))
 
     adapter = storage if storage is not None else get_default_storage_adapter()
     try:
@@ -39,11 +38,15 @@ def persist_replay_records(
     """Persist formal replay records through an explicit storage adapter."""
 
     validated_bundle = _revalidate_write_bundle(write_bundle)
+    _assert_write_bundle_boundary(validated_bundle)
     records = list(validated_bundle.replay_records)
     audit_record_ids = set(validated_bundle.audit_records_by_id())
     for record in records:
-        _validate_replay_record_for_write(record, audit_record_ids)
-        assert_no_forbidden_write(record.model_dump(mode="json"))
+        _validate_replay_record_for_write(
+            replay_record=record,
+            bundle_manifest_cycle_id=validated_bundle.manifest_cycle_id,
+            audit_record_ids=audit_record_ids,
+        )
 
     adapter = storage if storage is not None else get_default_storage_adapter()
     try:
@@ -56,12 +59,22 @@ def _revalidate_write_bundle(write_bundle: AuditWriteBundle) -> AuditWriteBundle
     return AuditWriteBundle.model_validate(write_bundle.model_dump(mode="python"))
 
 
+def _assert_write_bundle_boundary(write_bundle: AuditWriteBundle) -> None:
+    assert_no_forbidden_write(write_bundle.model_dump(mode="json"))
+
+
 def _validate_replay_record_for_write(
     replay_record: ReplayRecord,
+    bundle_manifest_cycle_id: str,
     audit_record_ids: set[str],
 ) -> None:
     if not replay_record.manifest_cycle_id:
         raise ValueError("ReplayRecord.manifest_cycle_id must not be empty")
+    if replay_record.manifest_cycle_id != bundle_manifest_cycle_id:
+        raise ValueError(
+            "ReplayRecord.manifest_cycle_id must match "
+            "AuditWriteBundle.manifest_cycle_id"
+        )
     if replay_record.replay_mode != "read_history":
         raise ValueError("ReplayRecord.replay_mode must be read_history")
 

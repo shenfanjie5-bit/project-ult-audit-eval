@@ -16,7 +16,13 @@ class AuditStorageError(RuntimeError):
 
 
 class AuditPersistenceError(RuntimeError):
-    """Raised when a storage adapter fails during a persistence operation."""
+    """Raised when a storage adapter fails during a persistence operation.
+
+    The current in-memory and DuckDB adapters append each batch through one
+    adapter call, so they report ``partial_ids=[]`` on failure. ``partial_ids``
+    is reserved for future batch adapters that can identify rows persisted
+    before an error.
+    """
 
     def __init__(
         self,

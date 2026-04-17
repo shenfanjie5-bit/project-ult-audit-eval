@@ -124,7 +124,7 @@ def test_persist_replay_records_rejects_manifest_mismatch_before_adapter_call() 
     storage = InMemoryFormalAuditStorageAdapter()
     bundle.replay_records[0].manifest_cycle_id = "cycle_other"
 
-    with pytest.raises(ValidationError, match="manifest_cycle_id"):
+    with pytest.raises(ValueError, match="manifest_cycle_id"):
         persist_replay_records(bundle, storage)
 
     assert storage.replay_rows == []
@@ -135,7 +135,7 @@ def test_persist_replay_records_rejects_missing_audit_id_before_adapter_call() -
     storage = InMemoryFormalAuditStorageAdapter()
     bundle.replay_records[0].audit_record_ids.append("audit-missing")
 
-    with pytest.raises(ValidationError, match="audit-missing"):
+    with pytest.raises(ValueError, match="audit-missing"):
         persist_replay_records(bundle, storage)
 
     assert storage.replay_rows == []
