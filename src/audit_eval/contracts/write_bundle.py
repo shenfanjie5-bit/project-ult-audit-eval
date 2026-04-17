@@ -31,8 +31,14 @@ class AuditWriteBundle(BaseModel):
 
         assert_no_forbidden_write(self.model_dump(mode="python"))
 
-        audit_record_ids = set(self.audit_records_by_id())
+        audit_records_by_id = self.audit_records_by_id()
+        audit_record_ids = set(audit_records_by_id)
         for replay_record in self.replay_records:
+            if replay_record.cycle_id != self.manifest_cycle_id:
+                raise ValueError(
+                    "ReplayRecord.cycle_id must match "
+                    "AuditWriteBundle.manifest_cycle_id"
+                )
             if replay_record.manifest_cycle_id != self.manifest_cycle_id:
                 raise ValueError(
                     "ReplayRecord.manifest_cycle_id must match "
@@ -49,6 +55,45 @@ class AuditWriteBundle(BaseModel):
                 raise ValueError(
                     "ReplayRecord.audit_record_ids reference missing "
                     f"AuditRecord.record_id values: {missing}"
+                )
+
+            referenced_records = [
+                audit_records_by_id[record_id]
+                for record_id in replay_record.audit_record_ids
+            ]
+            cycle_mismatches = [
+                record.record_id
+                for record in referenced_records
+                if record.cycle_id != replay_record.cycle_id
+            ]
+            if cycle_mismatches:
+                mismatches = ", ".join(cycle_mismatches)
+                raise ValueError(
+                    "ReplayRecord.audit_record_ids reference AuditRecord rows "
+                    f"from a different cycle: {mismatches}"
+                )
+
+            snapshot_object_refs = set(replay_record.formal_snapshot_refs)
+            object_ref_mismatches = [
+                record.record_id
+                for record in referenced_records
+                if record.object_ref not in snapshot_object_refs
+            ]
+            if object_ref_mismatches:
+                mismatches = ", ".join(object_ref_mismatches)
+                raise ValueError(
+                    "ReplayRecord.audit_record_ids reference AuditRecord rows "
+                    f"outside formal_snapshot_refs: {mismatches}"
+                )
+
+            has_replay_object_record = any(
+                record.object_ref == replay_record.object_ref
+                for record in referenced_records
+            )
+            if not has_replay_object_record:
+                raise ValueError(
+                    "ReplayRecord.audit_record_ids must include an AuditRecord "
+                    "for ReplayRecord.object_ref"
                 )
         return self
 

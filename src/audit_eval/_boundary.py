@@ -9,9 +9,9 @@ class BoundaryViolationError(Exception):
     """Raised when a payload attempts to write a forbidden field."""
 
 
-def assert_no_forbidden_write(payload: object) -> None:
+def assert_no_forbidden_write(payload: object, path: str = "$") -> None:
     """Reject payloads containing fields this package must never write."""
-    forbidden_fields = tuple(_iter_forbidden_field_paths(payload))
+    forbidden_fields = tuple(_iter_forbidden_field_paths(payload, path))
     if forbidden_fields:
         fields = ", ".join(forbidden_fields)
         raise BoundaryViolationError(f"Forbidden write field(s): {fields}")

@@ -70,6 +70,42 @@ def test_write_bundle_rejects_replay_manifest_mismatch() -> None:
         AuditWriteBundle.model_validate(payload)
 
 
+def test_write_bundle_rejects_replay_cycle_mismatch() -> None:
+    payload = _bundle_payload()
+    payload["replay_records"][0]["cycle_id"] = "cycle_other"
+
+    with pytest.raises(ValidationError, match="cycle_id"):
+        AuditWriteBundle.model_validate(payload)
+
+
+def test_write_bundle_rejects_referenced_audit_record_cycle_mismatch() -> None:
+    payload = _bundle_payload()
+    payload["audit_records"][0]["cycle_id"] = "cycle_other"
+
+    with pytest.raises(ValidationError, match="different cycle"):
+        AuditWriteBundle.model_validate(payload)
+
+
+def test_write_bundle_rejects_replay_reference_outside_snapshot_refs() -> None:
+    payload = _bundle_payload()
+    payload["replay_records"][0]["audit_record_ids"].append(
+        "audit-cycle_20260410-L7-recommendation"
+    )
+
+    with pytest.raises(ValidationError, match="outside formal_snapshot_refs"):
+        AuditWriteBundle.model_validate(payload)
+
+
+def test_write_bundle_rejects_replay_missing_own_object_audit_record() -> None:
+    payload = _bundle_payload()
+    payload["replay_records"][1]["audit_record_ids"] = [
+        "audit-cycle_20260410-L4-world_state"
+    ]
+
+    with pytest.raises(ValidationError, match="ReplayRecord.object_ref"):
+        AuditWriteBundle.model_validate(payload)
+
+
 def test_write_bundle_rejects_forbidden_write_fields_recursively() -> None:
     payload = _bundle_payload()
     payload["metadata"] = {
