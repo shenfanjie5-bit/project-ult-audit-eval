@@ -1,0 +1,33 @@
+[
+  {
+    "replay_id": "replay-cycle_20260410-world_state",
+    "cycle_id": "cycle_20260410",
+    "object_ref": "world_state",
+    "audit_record_ids": [
+      "audit-cycle_20260410-L4-world_state"
+    ],
+    "manifest_cycle_id": "cycle_20260410",
+    "formal_snapshot_refs": {
+      "world_state": "snapshot://cycle_20260410/world_state"
+    },
+    "dagster_run_id": "dagster-fixture-run-20260410",
+    "replay_mode": "read_history"
+  },
+  {
+    "replay_id": "replay-cycle_20260410-recommendation",
+    "cycle_id": "cycle_20260410",
+    "object_ref": "recommendation",
+    "audit_record_ids": [
+      "audit-cycle_20260410-L4-world_state",
+      "audit-cycle_20260410-L7-recommendation"
+    ],
+    "manifest_cycle_id": "cycle_20260410",
+    "formal_snapshot_refs": {
+      "world_state": "snapshot://cycle_20260410/world_state",
+      "recommendation": "snapshot://cycle_20260410/recommendation"
+    },
+    "dagster_run_id": "dagster-fixture-run-20260410",
+    "replay_mode": "read_history"
+  }
+]
+
