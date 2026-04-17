@@ -342,10 +342,12 @@ def _load_graph_snapshot(
         raise GraphSnapshotMissing(
             f"Graph snapshot {graph_snapshot_ref!r} is missing"
         )
-    if (
-        graph_snapshot.get("graph_snapshot_ref", graph_snapshot_ref)
-        != graph_snapshot_ref
-    ):
+    if "graph_snapshot_ref" not in graph_snapshot:
+        raise GraphSnapshotMissing(
+            f"Graph snapshot {graph_snapshot_ref!r} is missing "
+            "graph_snapshot_ref binding metadata"
+        )
+    if graph_snapshot["graph_snapshot_ref"] != graph_snapshot_ref:
         raise GraphSnapshotMissing(
             f"Graph snapshot is not bound to {graph_snapshot_ref!r}"
         )
@@ -375,7 +377,12 @@ def _load_dagster_summary(
         raise DagsterSummaryMissing(
             f"Dagster run summary {dagster_run_id!r} is missing"
         )
-    if dagster_summary.get("run_id", dagster_run_id) != dagster_run_id:
+    if "run_id" not in dagster_summary:
+        raise DagsterSummaryMissing(
+            f"Dagster run summary {dagster_run_id!r} is missing run_id "
+            "binding metadata"
+        )
+    if dagster_summary["run_id"] != dagster_run_id:
         raise DagsterSummaryMissing(
             f"Dagster run summary is not bound to {dagster_run_id!r}"
         )

@@ -388,6 +388,15 @@ def test_missing_graph_snapshot_raises_typed_error() -> None:
         replay_cycle_object("cycle_20260410", "recommendation", context=context)
 
 
+def test_graph_snapshot_missing_identity_metadata_raises_typed_error() -> None:
+    graph_snapshot = dict(_graph_snapshot())
+    del graph_snapshot["graph_snapshot_ref"]
+    context, _calls = _make_context(graph_snapshot=graph_snapshot)
+
+    with pytest.raises(GraphSnapshotMissing, match="graph_snapshot_ref"):
+        replay_cycle_object("cycle_20260410", "recommendation", context=context)
+
+
 def test_graph_snapshot_ref_without_gateway_raises_typed_error() -> None:
     context, _calls = _make_context(graph_gateway=None)
 
@@ -399,6 +408,15 @@ def test_missing_dagster_run_summary_raises_typed_error() -> None:
     context, _calls = _make_context(dagster_summary=None)
 
     with pytest.raises(DagsterSummaryMissing):
+        replay_cycle_object("cycle_20260410", "recommendation", context=context)
+
+
+def test_dagster_summary_missing_identity_metadata_raises_typed_error() -> None:
+    dagster_summary = dict(_dagster_summary())
+    del dagster_summary["run_id"]
+    context, _calls = _make_context(dagster_summary=dagster_summary)
+
+    with pytest.raises(DagsterSummaryMissing, match="run_id"):
         replay_cycle_object("cycle_20260410", "recommendation", context=context)
 
 
