@@ -1,0 +1,18 @@
+{
+  "graph_snapshot_ref": "graph://cycle_20260410/recommendation_dependency_graph",
+  "cycle_id": "cycle_20260410",
+  "object_ref": "recommendation",
+  "summary": {
+    "nodes": [
+      "world_state",
+      "recommendation"
+    ],
+    "edges": [
+      {
+        "from": "world_state",
+        "to": "recommendation",
+        "kind": "input"
+      }
+    ]
+  }
+}

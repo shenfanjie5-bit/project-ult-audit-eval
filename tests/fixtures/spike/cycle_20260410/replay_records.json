@@ -10,6 +10,7 @@
     "formal_snapshot_refs": {
       "world_state": "snapshot://cycle_20260410/world_state"
     },
+    "graph_snapshot_ref": null,
     "dagster_run_id": "dagster-fixture-run-20260410",
     "replay_mode": "read_history"
   },
@@ -26,8 +27,8 @@
       "world_state": "snapshot://cycle_20260410/world_state",
       "recommendation": "snapshot://cycle_20260410/recommendation"
     },
+    "graph_snapshot_ref": "graph://cycle_20260410/recommendation_dependency_graph",
     "dagster_run_id": "dagster-fixture-run-20260410",
     "replay_mode": "read_history"
   }
 ]
-

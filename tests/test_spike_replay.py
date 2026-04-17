@@ -9,8 +9,14 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from audit_eval.audit.replay import (
+    AuditRecordMissing,
+    ManifestBindingError,
+    ReplayRecordNotFound,
+    SnapshotLoadError,
+    reconstruct_replay_view,
+)
 from audit_eval.contracts.replay_draft import AuditRecordDraft, ReplayRecordDraft
-from scripts.spike_replay import reconstruct_replay_view
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "spike"
@@ -34,9 +40,29 @@ def test_reconstruct_returns_manifest_bound_snapshots() -> None:
 
     assert set(replay_view) >= {
         "audit_records",
+        "dagster_run_summary",
+        "graph_snapshot_ref",
+        "graph_snapshot_summary",
         "manifest_snapshot_set",
+        "replay_record",
         "historical_formal_objects",
     }
+    assert replay_view["replay_record"]["replay_id"] == (
+        "replay-cycle_20260410-recommendation"
+    )
+    assert replay_view["graph_snapshot_ref"] == (
+        "graph://cycle_20260410/recommendation_dependency_graph"
+    )
+    assert replay_view["graph_snapshot_summary"]["summary"]["edges"] == [
+        {
+            "from": "world_state",
+            "to": "recommendation",
+            "kind": "input",
+        }
+    ]
+    assert replay_view["dagster_run_summary"]["dagster_run_id"] == (
+        "dagster-fixture-run-20260410"
+    )
     manifest_refs = set(replay_view["manifest_snapshot_set"].values())
     historical_objects = replay_view["historical_formal_objects"]
 
@@ -97,7 +123,7 @@ def test_manifest_ref_selects_snapshot_file_not_object_name(tmp_path: Path) -> N
     bound_snapshot["snapshot_ref"] = "snapshot://cycle_20260410/recommendation"
     bound_snapshot_path.write_text(json.dumps(bound_snapshot), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="not bound to manifest ref"):
+    with pytest.raises(ManifestBindingError, match="not bound to manifest ref"):
         reconstruct_replay_view(
             cycle_id="cycle_20260410",
             object_ref="recommendation",
@@ -126,6 +152,7 @@ def test_replay_record_rejects_non_read_history_mode() -> None:
             formal_snapshot_refs={
                 "recommendation": "snapshot://cycle_20260410/recommendation"
             },
+            graph_snapshot_ref=None,
             dagster_run_id="dagster-fixture-run-20260410",
             replay_mode=cast(Any, "rerun_model"),
         )
@@ -151,7 +178,7 @@ def test_five_fields_required_when_llm_called() -> None:
         )
 
 
-def test_missing_manifest_ref_raises_key_error(tmp_path: Path) -> None:
+def test_missing_manifest_ref_raises_typed_error(tmp_path: Path) -> None:
     fixture_copy = tmp_path / "spike"
     shutil.copytree(FIXTURE_ROOT, fixture_copy)
     manifest_path = fixture_copy / "cycle_20260410" / "manifest.json"
@@ -159,7 +186,83 @@ def test_missing_manifest_ref_raises_key_error(tmp_path: Path) -> None:
     del manifest["snapshot_refs"]["recommendation"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ManifestBindingError, match="Manifest missing snapshot ref"):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
+def test_missing_graph_snapshot_summary_raises_clear_error(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    graph_path = (
+        fixture_copy
+        / "cycle_20260410"
+        / "graph_snapshots"
+        / "recommendation_dependency_graph.json"
+    )
+    graph_path.unlink()
+
+    with pytest.raises(
+        SnapshotLoadError,
+        match="graph snapshot summary graph://cycle_20260410/",
+    ):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
+def test_missing_dagster_run_summary_raises_clear_error(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    dagster_path = (
+        fixture_copy
+        / "cycle_20260410"
+        / "dagster_runs"
+        / "dagster-fixture-run-20260410.json"
+    )
+    dagster_path.unlink()
+
+    with pytest.raises(
+        SnapshotLoadError,
+        match="Dagster run summary dagster-fixture-run-20260410",
+    ):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
+def test_missing_replay_record_raises_typed_error() -> None:
+    with pytest.raises(ReplayRecordNotFound, match="found 0"):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="missing-object",
+            fixture_root=FIXTURE_ROOT,
+        )
+
+
+def test_missing_audit_record_raises_typed_error(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    audit_records_path = fixture_copy / "cycle_20260410" / "audit_records.json"
+    audit_records = json.loads(audit_records_path.read_text(encoding="utf-8"))
+    audit_records = [
+        record
+        for record in audit_records
+        if record["record_id"] != "audit-cycle_20260410-L7-recommendation"
+    ]
+    audit_records_path.write_text(json.dumps(audit_records), encoding="utf-8")
+
+    with pytest.raises(
+        AuditRecordMissing,
+        match="audit-cycle_20260410-L7-recommendation",
+    ):
         reconstruct_replay_view(
             cycle_id="cycle_20260410",
             object_ref="recommendation",
