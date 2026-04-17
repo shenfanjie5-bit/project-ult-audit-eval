@@ -145,6 +145,7 @@ def reconstruct_replay_view(
     return {
         "cycle_id": cycle_id,
         "object_ref": object_ref,
+        "replay_record": replay_record.model_dump(mode="json"),
         "audit_records": [
             record.model_dump(mode="json") for record in replay_audit_records
         ],

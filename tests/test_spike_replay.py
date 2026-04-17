@@ -45,6 +45,20 @@ def test_reconstruct_returns_manifest_bound_snapshots() -> None:
         assert historical_object["source_ref"] in manifest_refs
 
 
+def test_reconstruct_preserves_replay_lineage_fields() -> None:
+    replay_view = reconstruct_replay_view(
+        cycle_id="cycle_20260410",
+        object_ref="recommendation",
+        fixture_root=FIXTURE_ROOT,
+    )
+
+    replay_record = replay_view["replay_record"]
+    assert replay_record["graph_snapshot_ref"] == (
+        "graph://cycle_20260410/portfolio_graph"
+    )
+    assert replay_record["created_at"] == "2026-04-10T16:09:00Z"
+
+
 def test_manifest_ref_selects_snapshot_file_not_object_name(tmp_path: Path) -> None:
     fixture_copy = tmp_path / "spike"
     shutil.copytree(FIXTURE_ROOT, fixture_copy)
@@ -126,8 +140,10 @@ def test_replay_record_rejects_non_read_history_mode() -> None:
             formal_snapshot_refs={
                 "recommendation": "snapshot://cycle_20260410/recommendation"
             },
+            graph_snapshot_ref="graph://cycle_20260410/portfolio_graph",
             dagster_run_id="dagster-fixture-run-20260410",
             replay_mode=cast(Any, "rerun_model"),
+            created_at=datetime(2026, 4, 10, 16, 9, tzinfo=timezone.utc),
         )
 
 
