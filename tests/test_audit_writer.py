@@ -130,6 +130,17 @@ def test_persist_replay_records_rejects_manifest_mismatch_before_adapter_call() 
     assert storage.replay_rows == []
 
 
+def test_persist_audit_records_rejects_manifest_mismatch_before_adapter_call() -> None:
+    bundle = _bundle()
+    storage = InMemoryFormalAuditStorageAdapter()
+    bundle.replay_records[0].manifest_cycle_id = "cycle_other"
+
+    with pytest.raises(ValueError, match="manifest_cycle_id"):
+        persist_audit_records(bundle, storage)
+
+    assert storage.audit_rows == []
+
+
 def test_persist_replay_records_rejects_missing_audit_id_before_adapter_call() -> None:
     bundle = _bundle()
     storage = InMemoryFormalAuditStorageAdapter()

@@ -22,6 +22,7 @@ def persist_audit_records(
 
     validated_bundle = _revalidate_write_bundle(write_bundle)
     _assert_write_bundle_boundary(validated_bundle)
+    _validate_write_bundle_for_persistence(validated_bundle)
     records = list(validated_bundle.audit_records)
 
     adapter = storage if storage is not None else get_default_storage_adapter()
@@ -39,14 +40,8 @@ def persist_replay_records(
 
     validated_bundle = _revalidate_write_bundle(write_bundle)
     _assert_write_bundle_boundary(validated_bundle)
+    _validate_write_bundle_for_persistence(validated_bundle)
     records = list(validated_bundle.replay_records)
-    audit_record_ids = set(validated_bundle.audit_records_by_id())
-    for record in records:
-        _validate_replay_record_for_write(
-            replay_record=record,
-            bundle_manifest_cycle_id=validated_bundle.manifest_cycle_id,
-            audit_record_ids=audit_record_ids,
-        )
 
     adapter = storage if storage is not None else get_default_storage_adapter()
     try:
@@ -61,6 +56,16 @@ def _revalidate_write_bundle(write_bundle: AuditWriteBundle) -> AuditWriteBundle
 
 def _assert_write_bundle_boundary(write_bundle: AuditWriteBundle) -> None:
     assert_no_forbidden_write(write_bundle.model_dump(mode="json"))
+
+
+def _validate_write_bundle_for_persistence(write_bundle: AuditWriteBundle) -> None:
+    audit_record_ids = set(write_bundle.audit_records_by_id())
+    for record in write_bundle.replay_records:
+        _validate_replay_record_for_write(
+            replay_record=record,
+            bundle_manifest_cycle_id=write_bundle.manifest_cycle_id,
+            audit_record_ids=audit_record_ids,
+        )
 
 
 def _validate_replay_record_for_write(
