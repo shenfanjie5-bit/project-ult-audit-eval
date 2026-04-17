@@ -245,6 +245,8 @@ def test_replay_cycle_object_returns_manifest_bound_replay_view() -> None:
         manifest_ref = replay_view.manifest_snapshot_set[formal_object_ref]
         assert historical_object["source_ref"] == manifest_ref
         assert historical_object["data"]["snapshot_ref"] == manifest_ref
+        assert historical_object["data"]["source_ref"] == manifest_ref
+        assert historical_object["data"]["object_ref"] == formal_object_ref
 
     replay_payload = replay_view.to_dict()
     json.dumps(replay_payload)
@@ -343,6 +345,39 @@ def test_snapshot_ref_mismatch_raises_typed_error() -> None:
     context, _calls = _make_context(snapshots=snapshots)
 
     with pytest.raises(SnapshotLoadError, match="manifest ref"):
+        replay_cycle_object("cycle_20260410", "recommendation", context=context)
+
+
+def test_unbound_snapshot_missing_metadata_raises_typed_error() -> None:
+    snapshots = _snapshots()
+    snapshots["snapshot://cycle_20260410/recommendation"] = {
+        "recommendation": {"action": "head_object_without_binding"},
+    }
+    context, _calls = _make_context(snapshots=snapshots)
+
+    with pytest.raises(SnapshotLoadError, match="snapshot_ref"):
+        replay_cycle_object("cycle_20260410", "recommendation", context=context)
+
+
+def test_source_ref_mismatch_raises_typed_error() -> None:
+    snapshots = _snapshots()
+    bad_snapshot = dict(snapshots["snapshot://cycle_20260410/recommendation"])
+    bad_snapshot["source_ref"] = "snapshot://cycle_20260410/head"
+    snapshots["snapshot://cycle_20260410/recommendation"] = bad_snapshot
+    context, _calls = _make_context(snapshots=snapshots)
+
+    with pytest.raises(SnapshotLoadError, match="source_ref"):
+        replay_cycle_object("cycle_20260410", "recommendation", context=context)
+
+
+def test_snapshot_object_ref_mismatch_raises_typed_error() -> None:
+    snapshots = _snapshots()
+    bad_snapshot = dict(snapshots["snapshot://cycle_20260410/recommendation"])
+    bad_snapshot["object_ref"] = "formal_head_recommendation"
+    snapshots["snapshot://cycle_20260410/recommendation"] = bad_snapshot
+    context, _calls = _make_context(snapshots=snapshots)
+
+    with pytest.raises(SnapshotLoadError, match="object_ref"):
         replay_cycle_object("cycle_20260410", "recommendation", context=context)
 
 

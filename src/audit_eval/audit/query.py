@@ -286,15 +286,30 @@ def _load_snapshot(
             "Manifest-bound formal snapshot is missing or not an object: "
             f"{snapshot_ref!r}"
         )
-    if snapshot_data.get("snapshot_ref", snapshot_ref) != snapshot_ref:
+    if "snapshot_ref" not in snapshot_data:
+        raise SnapshotLoadError(
+            f"Formal snapshot {snapshot_ref!r} is missing snapshot_ref "
+            "binding metadata"
+        )
+    if snapshot_data["snapshot_ref"] != snapshot_ref:
         raise SnapshotLoadError(
             f"Formal snapshot {snapshot_ref!r} is not bound to manifest ref"
         )
-    if snapshot_data.get("source_ref", snapshot_ref) != snapshot_ref:
+    if "source_ref" not in snapshot_data:
+        raise SnapshotLoadError(
+            f"Formal snapshot {snapshot_ref!r} is missing source_ref "
+            "binding metadata"
+        )
+    if snapshot_data["source_ref"] != snapshot_ref:
         raise SnapshotLoadError(
             f"Formal snapshot {snapshot_ref!r} source_ref is not manifest-bound"
         )
-    if snapshot_data.get("object_ref", formal_object_ref) != formal_object_ref:
+    if "object_ref" not in snapshot_data:
+        raise SnapshotLoadError(
+            f"Formal snapshot {snapshot_ref!r} is missing object_ref "
+            "binding metadata"
+        )
+    if snapshot_data["object_ref"] != formal_object_ref:
         raise SnapshotLoadError(
             f"Formal snapshot {snapshot_ref!r} object_ref does not match "
             f"{formal_object_ref!r}"
