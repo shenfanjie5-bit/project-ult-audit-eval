@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any, Protocol
 
 from audit_eval.contracts.audit_record import AuditRecord
 from audit_eval.contracts.replay_record import ReplayRecord
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_MAX_RELATION_PARTS = 3
 
 
 class AuditStorageError(RuntimeError):
@@ -76,8 +81,8 @@ class DuckDBFormalAuditStorageAdapter:
             raise AuditStorageError("replay_table must be provided")
 
         self.connection = connection
-        self.audit_table = audit_table
-        self.replay_table = replay_table
+        self.audit_table = _quote_relation_name(audit_table, "audit_table")
+        self.replay_table = _quote_relation_name(replay_table, "replay_table")
 
     def append_audit_records(self, records: Sequence[AuditRecord]) -> list[str]:
         rows = [record.model_dump(mode="json") for record in records]
@@ -107,6 +112,20 @@ class DuckDBFormalAuditStorageAdapter:
 
 def _quote_identifier(identifier: str) -> str:
     return f'"{identifier.replace(chr(34), chr(34) * 2)}"'
+
+
+def _quote_relation_name(relation_name: str, config_name: str) -> str:
+    parts = relation_name.split(".")
+    if (
+        not parts
+        or len(parts) > _MAX_RELATION_PARTS
+        or any(not _IDENTIFIER_RE.fullmatch(part) for part in parts)
+    ):
+        raise AuditStorageError(
+            f"{config_name} must be 1-{_MAX_RELATION_PARTS} dot-separated "
+            "SQL identifiers matching [A-Za-z_][A-Za-z0-9_]*"
+        )
+    return ".".join(_quote_identifier(part) for part in parts)
 
 
 __all__ = [

@@ -270,10 +270,38 @@ def test_duckdb_adapter_only_appends_to_configured_tables() -> None:
     assert audit_ids == [record.record_id for record in bundle.audit_records]
     assert replay_ids == [record.replay_id for record in bundle.replay_records]
     statements = [call[0] for call in connection.calls]
-    assert statements[0].startswith("INSERT INTO formal.audit_record")
-    assert statements[1].startswith("INSERT INTO formal.replay_record")
+    assert statements[0].startswith('INSERT INTO "formal"."audit_record"')
+    assert statements[1].startswith('INSERT INTO "formal"."replay_record"')
     statement_verbs = [
         statement.lstrip().split(maxsplit=1)[0].upper()
         for statement in statements
     ]
     assert statement_verbs == ["INSERT", "INSERT"]
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    [
+        "formal.audit_record; DROP TABLE formal.replay_record",
+        "formal.audit_record -- comment",
+        "formal.audit_record/*comment*/",
+        "formal audit_record",
+        "formal..audit_record",
+        ".formal",
+        "formal.",
+        "formal.audit-record",
+        '"formal"."audit_record"',
+        "formal.audit_record.extra.part",
+    ],
+)
+def test_duckdb_adapter_rejects_suspicious_table_names(table_name: str) -> None:
+    connection = FakeDuckDBConnection()
+
+    with pytest.raises(AuditStorageError, match="SQL identifiers"):
+        DuckDBFormalAuditStorageAdapter(
+            connection=connection,
+            audit_table=table_name,
+            replay_table="formal.replay_record",
+        )
+
+    assert connection.calls == []
