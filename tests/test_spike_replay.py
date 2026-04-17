@@ -34,8 +34,12 @@ def test_reconstruct_returns_manifest_bound_snapshots() -> None:
 
     assert set(replay_view) >= {
         "audit_records",
+        "dagster_run_summary",
+        "graph_snapshot_ref",
+        "graph_snapshot_summary",
         "manifest_snapshot_set",
         "historical_formal_objects",
+        "replay_record",
     }
     manifest_refs = set(replay_view["manifest_snapshot_set"].values())
     historical_objects = replay_view["historical_formal_objects"]
@@ -55,6 +59,13 @@ def test_reconstruct_preserves_replay_lineage_fields() -> None:
     replay_record = replay_view["replay_record"]
     assert replay_record["graph_snapshot_ref"] == (
         "graph://cycle_20260410/portfolio_graph"
+    )
+    assert replay_view["graph_snapshot_ref"] == replay_record["graph_snapshot_ref"]
+    assert replay_view["graph_snapshot_summary"]["graph_snapshot_ref"] == (
+        replay_record["graph_snapshot_ref"]
+    )
+    assert replay_view["dagster_run_summary"]["run_id"] == (
+        "dagster-fixture-run-20260410"
     )
     assert replay_record["created_at"] == "2026-04-10T16:09:00Z"
 
@@ -129,6 +140,51 @@ def test_reconstruct_does_not_call_network() -> None:
     assert replay_view["object_ref"] == "recommendation"
 
 
+def test_missing_graph_snapshot_summary_raises_clear_error(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    graph_summary_path = (
+        fixture_copy
+        / "cycle_20260410"
+        / "graph_snapshots"
+        / "portfolio_graph.json"
+    )
+    graph_summary_path.unlink()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Missing graph snapshot summary for graph://cycle_20260410/"
+        "portfolio_graph fixture",
+    ):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
+def test_missing_dagster_run_summary_raises_clear_error(tmp_path: Path) -> None:
+    fixture_copy = tmp_path / "spike"
+    shutil.copytree(FIXTURE_ROOT, fixture_copy)
+    dagster_summary_path = (
+        fixture_copy
+        / "cycle_20260410"
+        / "dagster_runs"
+        / "dagster-fixture-run-20260410.json"
+    )
+    dagster_summary_path.unlink()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Missing Dagster run summary for dagster-fixture-run-20260410 fixture",
+    ):
+        reconstruct_replay_view(
+            cycle_id="cycle_20260410",
+            object_ref="recommendation",
+            fixture_root=fixture_copy,
+        )
+
+
 def test_replay_record_rejects_non_read_history_mode() -> None:
     with pytest.raises(ValidationError):
         ReplayRecordDraft(
@@ -145,6 +201,22 @@ def test_replay_record_rejects_non_read_history_mode() -> None:
             replay_mode=cast(Any, "rerun_model"),
             created_at=datetime(2026, 4, 10, 16, 9, tzinfo=timezone.utc),
         )
+
+
+def test_replay_record_requires_explicit_graph_snapshot_ref_key() -> None:
+    replay_records_path = FIXTURE_ROOT / "cycle_20260410" / "replay_records.json"
+    replay_records = json.loads(replay_records_path.read_text(encoding="utf-8"))
+    replay_payload = replay_records[0]
+
+    without_graph_key = dict(replay_payload)
+    del without_graph_key["graph_snapshot_ref"]
+    with pytest.raises(ValidationError):
+        ReplayRecordDraft.model_validate(without_graph_key)
+
+    with_null_graph_ref = dict(replay_payload)
+    with_null_graph_ref["graph_snapshot_ref"] = None
+    record = ReplayRecordDraft.model_validate(with_null_graph_ref)
+    assert record.graph_snapshot_ref is None
 
 
 def test_five_fields_required_when_llm_called() -> None:

@@ -10,11 +10,22 @@ from typing import Any
 from urllib.parse import urlparse
 
 from audit_eval.contracts.manifest_draft import CyclePublishManifestDraft
-from audit_eval.contracts.replay_draft import AuditRecordDraft, ReplayRecordDraft
+from audit_eval.contracts.replay_draft import (
+    AuditRecordDraft,
+    ReplayRecordDraft,
+    ReplayViewDraft,
+)
 
 
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_required_json(path: Path, description: str) -> Any:
+    try:
+        return _read_json(path)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Missing {description} fixture: {path}") from exc
 
 
 def load_manifest(path: Path) -> CyclePublishManifestDraft:
@@ -86,6 +97,97 @@ def _snapshot_path(cycle_fixture: Path, snapshot_ref: str) -> Path:
     return _fixture_path(cycle_fixture, snapshot_ref)
 
 
+def _graph_snapshot_path(cycle_fixture: Path, graph_snapshot_ref: str) -> Path:
+    parsed_ref = urlparse(graph_snapshot_ref)
+
+    if parsed_ref.scheme != "graph":
+        raise ValueError(
+            f"Unsupported graph snapshot ref scheme: {parsed_ref.scheme}"
+        )
+    if parsed_ref.netloc != cycle_fixture.name:
+        raise ValueError(
+            "Graph snapshot ref cycle does not match loaded fixture cycle"
+        )
+
+    ref_path = parsed_ref.path.lstrip("/")
+    if not ref_path:
+        raise ValueError(
+            f"Graph snapshot ref has no fixture path: {graph_snapshot_ref}"
+        )
+
+    if ref_path.endswith(".json"):
+        relative_ref = ref_path
+    elif ref_path.startswith("graph_snapshots/"):
+        relative_ref = f"{ref_path}.json"
+    else:
+        relative_ref = f"graph_snapshots/{ref_path}.json"
+    return _fixture_path(cycle_fixture, relative_ref)
+
+
+def _dagster_run_summary_path(cycle_fixture: Path, dagster_run_id: str) -> Path:
+    run_id_path = Path(dagster_run_id)
+    if (
+        not dagster_run_id
+        or run_id_path.is_absolute()
+        or len(run_id_path.parts) != 1
+        or ".." in run_id_path.parts
+    ):
+        raise ValueError(f"Dagster run id escapes fixture root: {dagster_run_id}")
+    return _fixture_path(cycle_fixture, f"dagster_runs/{dagster_run_id}.json")
+
+
+def load_graph_snapshot_summary(
+    cycle_fixture: Path,
+    graph_snapshot_ref: str | None,
+) -> dict[str, Any] | None:
+    """Load a graph snapshot summary referenced by the replay record, if present."""
+
+    if graph_snapshot_ref is None:
+        return None
+
+    graph_path = _graph_snapshot_path(cycle_fixture, graph_snapshot_ref)
+    graph_summary = _read_required_json(
+        graph_path,
+        f"graph snapshot summary for {graph_snapshot_ref}",
+    )
+    if not isinstance(graph_summary, dict):
+        raise ValueError(f"Expected graph snapshot summary object in {graph_path}")
+    if graph_summary.get("graph_snapshot_ref") != graph_snapshot_ref:
+        raise ValueError(
+            f"Graph snapshot summary {graph_path} is not bound to "
+            f"{graph_snapshot_ref}"
+        )
+    if graph_summary.get("cycle_id") != cycle_fixture.name:
+        raise ValueError(
+            "Graph snapshot summary cycle_id does not match loaded fixture cycle"
+        )
+    return graph_summary
+
+
+def load_dagster_run_summary(
+    cycle_fixture: Path,
+    dagster_run_id: str,
+) -> dict[str, Any]:
+    """Load the Dagster run history summary referenced by the replay record."""
+
+    dagster_path = _dagster_run_summary_path(cycle_fixture, dagster_run_id)
+    dagster_summary = _read_required_json(
+        dagster_path,
+        f"Dagster run summary for {dagster_run_id}",
+    )
+    if not isinstance(dagster_summary, dict):
+        raise ValueError(f"Expected Dagster run summary object in {dagster_path}")
+    if dagster_summary.get("run_id") != dagster_run_id:
+        raise ValueError(
+            f"Dagster run summary {dagster_path} is not bound to {dagster_run_id}"
+        )
+    if dagster_summary.get("cycle_id") != cycle_fixture.name:
+        raise ValueError(
+            "Dagster run summary cycle_id does not match loaded fixture cycle"
+        )
+    return dagster_summary
+
+
 def reconstruct_replay_view(
     cycle_id: str,
     object_ref: str,
@@ -142,16 +244,27 @@ def reconstruct_replay_view(
             "data": snapshot_data,
         }
 
-    return {
-        "cycle_id": cycle_id,
-        "object_ref": object_ref,
-        "replay_record": replay_record.model_dump(mode="json"),
-        "audit_records": [
-            record.model_dump(mode="json") for record in replay_audit_records
-        ],
-        "manifest_snapshot_set": dict(manifest.snapshot_refs),
-        "historical_formal_objects": historical_formal_objects,
-    }
+    graph_snapshot_summary = load_graph_snapshot_summary(
+        cycle_fixture,
+        replay_record.graph_snapshot_ref,
+    )
+    dagster_run_summary = load_dagster_run_summary(
+        cycle_fixture,
+        replay_record.dagster_run_id,
+    )
+
+    replay_view = ReplayViewDraft(
+        cycle_id=cycle_id,
+        object_ref=object_ref,
+        replay_record=replay_record,
+        audit_records=replay_audit_records,
+        manifest_snapshot_set=dict(manifest.snapshot_refs),
+        historical_formal_objects=historical_formal_objects,
+        graph_snapshot_ref=replay_record.graph_snapshot_ref,
+        graph_snapshot_summary=graph_snapshot_summary,
+        dagster_run_summary=dagster_run_summary,
+    )
+    return replay_view.model_dump(mode="json")
 
 
 def main(argv: list[str] | None = None) -> int:

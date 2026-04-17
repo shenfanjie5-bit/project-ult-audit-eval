@@ -75,8 +75,25 @@ class ReplayRecordDraft(BaseModel):
     created_at: datetime
 
 
+class ReplayViewDraft(BaseModel):
+    """Draft read-history replay view returned by the offline spike."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cycle_id: str
+    object_ref: str
+    replay_record: ReplayRecordDraft
+    audit_records: list[AuditRecordDraft]
+    manifest_snapshot_set: dict[str, str]
+    historical_formal_objects: dict[str, dict[str, Any]]
+    graph_snapshot_ref: str | None
+    graph_snapshot_summary: dict[str, Any] | None
+    dagster_run_summary: dict[str, Any]
+
+
 __all__ = [
     "AuditRecordDraft",
     "ReplayBundleFields",
     "ReplayRecordDraft",
+    "ReplayViewDraft",
 ]
