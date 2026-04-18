@@ -139,7 +139,9 @@ class FixtureInputGateway:
         targets: Sequence[RetrospectiveTarget] | None = None,
         outcomes: dict[tuple[str, str, str], MarketOutcome] | None = None,
     ) -> None:
-        self.targets = list(targets or [RetrospectiveTarget("cycle_20260410", "recommendation")])
+        self.targets = list(
+            targets or [RetrospectiveTarget("cycle_20260410", "recommendation")]
+        )
         self.outcomes = _fixture_outcomes() if outcomes is None else outcomes
         self.target_calls: list[tuple[str, date]] = []
         self.outcome_calls: list[tuple[RetrospectiveTarget, str, date]] = []
@@ -393,15 +395,12 @@ def test_compute_retrospective_rejects_immature_t_plus_1_without_append() -> Non
     assert storage.rows == []
 
 
-@pytest.mark.parametrize("horizon", ["T+5", "T+20"])
-def test_compute_retrospective_rejects_unimplemented_horizons_without_append(
-    horizon: RetrospectiveHorizon,
-) -> None:
+def test_compute_retrospective_rejects_unknown_horizon_without_append() -> None:
     storage = CountingRetrospectiveStorage()
 
-    with pytest.raises(UnsupportedRetrospectiveHorizon, match="not implemented"):
+    with pytest.raises(UnsupportedRetrospectiveHorizon, match="Unsupported"):
         compute_retrospective(
-            horizon,
+            "T+2",  # type: ignore[arg-type]
             date(2026, 4, 10),
             input_gateway=FixtureInputGateway(),
             storage=storage,
@@ -416,9 +415,7 @@ def test_compute_retrospective_rejects_forbidden_field_in_outcome_without_append
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     outcome = deepcopy(_fixture_outcomes()[("cycle_20260410", "recommendation", "T+1")])
-    outcome.baseline_vs_llm_breakdown["nested"] = {
-        "feature_weight_multiplier": 1.2
-    }
+    outcome.baseline_vs_llm_breakdown["nested"] = {"feature_weight_multiplier": 1.2}
     gateway = FixtureInputGateway(
         outcomes={("cycle_20260410", "recommendation", "T+1"): outcome}
     )
