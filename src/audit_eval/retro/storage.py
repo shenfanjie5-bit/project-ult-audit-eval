@@ -21,6 +21,8 @@ from audit_eval.retro.schema import (
     RetrospectiveTarget,
 )
 
+_CurrentViewKey = tuple[str, RetrospectiveHorizon, str | None]
+
 
 class RetrospectiveStorageError(RuntimeError):
     """Raised when retrospective analytical storage is unavailable or fails."""
@@ -150,9 +152,7 @@ class InMemoryRetrospectiveEvaluationStorage:
     ) -> list[RetrospectiveEvaluation]:
         with self._lock:
             rows = deepcopy(self.rows)
-        evaluations = [
-            RetrospectiveEvaluation.model_validate(row) for row in rows
-        ]
+        evaluations = [RetrospectiveEvaluation.model_validate(row) for row in rows]
         return filter_evaluations_for_window(evaluations, window)
 
 
@@ -191,9 +191,9 @@ class InMemoryRetrospectiveCurrentViewStorage:
             alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
             summary_keys_snapshot = deepcopy(self._summary_keys)
             alert_state_keys_snapshot = deepcopy(self._alert_state_keys)
-            summary_key = (summary.date_window, summary.horizon)
+            summary_key = _current_view_key(summary)
             try:
-                summary_id = self._upsert_summary(summary)
+                summary_id = self._upsert_summary(summary, summary_key=summary_key)
                 alert_state_id = self._upsert_alert_state(
                     alert_state,
                     summary_key=summary_key,
@@ -208,16 +208,21 @@ class InMemoryRetrospectiveCurrentViewStorage:
 
     def upsert_summary(self, summary: RetrospectiveSummary) -> str:
         with self._lock:
-            return self._upsert_summary(summary)
+            return self._upsert_summary(summary, summary_key=_current_view_key(summary))
 
-    def _upsert_summary(self, summary: RetrospectiveSummary) -> str:
+    def _upsert_summary(
+        self,
+        summary: RetrospectiveSummary,
+        *,
+        summary_key: _CurrentViewKey,
+    ) -> str:
         row = deepcopy(asdict(summary))
         assert_no_forbidden_write(row, path="$.summary")
         _upsert_row(
             self.summary_rows,
             self._summary_keys,
             row,
-            key=(summary.date_window, summary.horizon),
+            key=summary_key,
         )
         return summary.date_window
 
@@ -229,9 +234,13 @@ class InMemoryRetrospectiveCurrentViewStorage:
         self,
         alert_state: AlertState,
         *,
-        summary_key: tuple[str, str] | None = None,
+        summary_key: _CurrentViewKey | None = None,
     ) -> str:
         row = deepcopy(asdict(alert_state))
+        if summary_key is not None:
+            row["date_window"] = summary_key[0]
+            row["horizon"] = summary_key[1]
+            row["object_ref"] = summary_key[2]
         assert_no_forbidden_write(row, path="$.alert_state")
         alert_state_id = (
             "alert-"
@@ -251,8 +260,7 @@ def get_default_input_gateway() -> RetrospectiveInputGateway:
     """Return configured retrospective input gateway, or fail closed."""
 
     raise RetrospectiveInputError(
-        "No default retrospective input gateway is configured; "
-        "pass input_gateway=..."
+        "No default retrospective input gateway is configured; pass input_gateway=..."
     )
 
 
@@ -294,6 +302,10 @@ def _upsert_row(
             return
     rows.append(deepcopy(row))
     keys.append(key)
+
+
+def _current_view_key(summary: RetrospectiveSummary) -> _CurrentViewKey:
+    return (summary.date_window, summary.horizon, summary.object_ref)
 
 
 __all__ = [
