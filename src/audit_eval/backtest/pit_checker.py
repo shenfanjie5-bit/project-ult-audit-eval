@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
 from typing import Protocol, TypeGuard
@@ -16,6 +17,8 @@ from audit_eval.contracts.common import JsonObject
 _MANIFEST_CYCLE_ID_KEY = "manifest_cycle_id"
 _MANIFEST_REF_KEY = "manifest_ref"
 _MANIFEST_SNAPSHOT_REFS_KEY = "manifest_snapshot_refs"
+_PUBLISHED_CYCLE_ID_KEY = "published_cycle_id"
+_PUBLISHED_AT_KEY = "published_at"
 _SNAPSHOT_COLLECTION_KEYS: frozenset[str] = frozenset(
     {
         _MANIFEST_SNAPSHOT_REFS_KEY,
@@ -27,6 +30,27 @@ _SNAPSHOT_COLLECTION_KEYS: frozenset[str] = frozenset(
         "snapshots",
     }
 )
+_AUTHORITATIVE_SNAPSHOT_COLLECTION_KEYS: tuple[str, ...] = (
+    _MANIFEST_SNAPSHOT_REFS_KEY,
+    "snapshot_refs",
+    "manifest_snapshot_set",
+    "formal_snapshot_refs",
+)
+_MANIFEST_METADATA_KEYS: frozenset[str] = frozenset(
+    {
+        _PUBLISHED_CYCLE_ID_KEY,
+        _MANIFEST_CYCLE_ID_KEY,
+        _MANIFEST_REF_KEY,
+        _PUBLISHED_AT_KEY,
+    }
+)
+
+
+@dataclass(frozen=True)
+class _AuthoritativeManifest:
+    snapshot_refs: frozenset[str]
+    published_cycle_id: str | None
+    manifest_ref: str | None
 
 
 class PointInTimeFeatureGateway(Protocol):
@@ -49,7 +73,7 @@ class PointInTimeManifestGateway(Protocol):
         manifest_cycle_id: str | None = None,
         manifest_ref: str | None = None,
     ) -> object:
-        """Return authoritative snapshot refs for a manifest cycle or ref."""
+        """Return authoritative snapshot refs or manifest metadata for one key."""
 
 
 class PointInTimeChecker:
@@ -97,22 +121,34 @@ class PointInTimeChecker:
             return PITCheckResult(passed=False, violations=tuple(violations))
 
         manifest_cycle_id, manifest_ref = manifest_lookup
+        lookup_manifest_cycle_id = manifest_cycle_id if manifest_ref is None else None
+        lookup_manifest_ref = manifest_ref
         try:
             raw_manifest_snapshot_refs = (
                 self.manifest_gateway.load_manifest_snapshot_refs(
-                    manifest_cycle_id=manifest_cycle_id,
-                    manifest_ref=manifest_ref,
+                    manifest_cycle_id=lookup_manifest_cycle_id,
+                    manifest_ref=lookup_manifest_ref,
                 )
             )
         except (BacktestInputError, KeyError, TypeError) as exc:
             violations.append(f"manifest snapshot refs unavailable: {exc}")
             return PITCheckResult(passed=False, violations=tuple(violations))
 
-        manifest_snapshot_refs = _normalize_authoritative_manifest_snapshot_refs(
+        authority_violation_count = len(violations)
+        authoritative_manifest = _normalize_authoritative_manifest(
             raw_manifest_snapshot_refs,
             violations,
         )
+        _validate_authoritative_manifest_binding(
+            authoritative_manifest,
+            requested_manifest_cycle_id=manifest_cycle_id,
+            requested_manifest_ref=manifest_ref,
+            violations=violations,
+        )
+        manifest_snapshot_refs = authoritative_manifest.snapshot_refs
         if not manifest_snapshot_refs:
+            return PITCheckResult(passed=False, violations=tuple(violations))
+        if len(violations) > authority_violation_count:
             return PITCheckResult(passed=False, violations=tuple(violations))
 
         requested_snapshot_ref_violations = _validate_requested_snapshot_refs(
@@ -438,6 +474,128 @@ def _extract_manifest_lookup(
     if manifest_cycle_id is None and manifest_ref is None:
         return None
     return manifest_cycle_id, manifest_ref
+
+
+def _normalize_authoritative_manifest(
+    raw_refs: object,
+    violations: list[str],
+) -> _AuthoritativeManifest:
+    published_cycle_id = _extract_manifest_metadata_string(
+        raw_refs,
+        (_PUBLISHED_CYCLE_ID_KEY, _MANIFEST_CYCLE_ID_KEY),
+        violations=violations,
+    )
+    manifest_ref = _extract_manifest_metadata_string(
+        raw_refs,
+        (_MANIFEST_REF_KEY,),
+        violations=violations,
+    )
+    snapshot_payload = _extract_authoritative_snapshot_payload(raw_refs)
+    snapshot_refs = _normalize_authoritative_manifest_snapshot_refs(
+        snapshot_payload,
+        violations,
+    )
+    return _AuthoritativeManifest(
+        snapshot_refs=snapshot_refs,
+        published_cycle_id=published_cycle_id,
+        manifest_ref=manifest_ref,
+    )
+
+
+def _validate_authoritative_manifest_binding(
+    manifest: _AuthoritativeManifest,
+    *,
+    requested_manifest_cycle_id: str | None,
+    requested_manifest_ref: str | None,
+    violations: list[str],
+) -> None:
+    if (
+        requested_manifest_cycle_id is not None
+        and manifest.published_cycle_id is not None
+        and manifest.published_cycle_id != requested_manifest_cycle_id
+    ):
+        violations.append(
+            "authoritative PIT manifest published_cycle_id "
+            f"{manifest.published_cycle_id!r} does not match requested "
+            f"manifest_cycle_id {requested_manifest_cycle_id!r}"
+        )
+
+    if (
+        requested_manifest_ref is not None
+        and manifest.manifest_ref is not None
+        and manifest.manifest_ref != requested_manifest_ref
+    ):
+        violations.append(
+            "authoritative PIT manifest_ref "
+            f"{manifest.manifest_ref!r} does not match requested "
+            f"manifest_ref {requested_manifest_ref!r}"
+        )
+
+    if (
+        requested_manifest_cycle_id is not None
+        and requested_manifest_ref is not None
+        and manifest.published_cycle_id is None
+    ):
+        violations.append(
+            "formal_snapshot_range declares both manifest_cycle_id and "
+            "manifest_ref, but the authoritative PIT manifest gateway did not "
+            "return published_cycle_id metadata proving the manifest_ref is "
+            "bound to the requested cycle"
+        )
+
+
+def _extract_manifest_metadata_string(
+    raw_refs: object,
+    keys: tuple[str, ...],
+    *,
+    violations: list[str],
+) -> str | None:
+    if not isinstance(raw_refs, Mapping):
+        return None
+
+    normalized_values: list[str] = []
+    for key in keys:
+        if key not in raw_refs:
+            continue
+        value = raw_refs[key]
+        path = f"$.authoritative_manifest.{key}"
+        if not isinstance(value, str):
+            violations.append(f"{path} must be a string")
+            continue
+        stripped = value.strip()
+        if not stripped:
+            violations.append(f"{path} must not be empty")
+            continue
+        normalized_values.append(stripped)
+
+    unique_values = frozenset(normalized_values)
+    if len(unique_values) > 1:
+        key_list = ", ".join(keys)
+        violations.append(
+            "authoritative PIT manifest metadata fields disagree for "
+            f"{key_list}: {sorted(unique_values)!r}"
+        )
+        return None
+    if not normalized_values:
+        return None
+    return normalized_values[0]
+
+
+def _extract_authoritative_snapshot_payload(raw_refs: object) -> object:
+    if not isinstance(raw_refs, Mapping):
+        return raw_refs
+
+    for key in _AUTHORITATIVE_SNAPSHOT_COLLECTION_KEYS:
+        if key in raw_refs:
+            return raw_refs[key]
+
+    if any(key in raw_refs for key in _MANIFEST_METADATA_KEYS):
+        return {
+            key: value
+            for key, value in raw_refs.items()
+            if key not in _MANIFEST_METADATA_KEYS
+        }
+    return raw_refs
 
 
 def _normalize_authoritative_manifest_snapshot_refs(
