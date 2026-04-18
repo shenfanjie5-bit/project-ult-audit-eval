@@ -4,7 +4,7 @@ import socket
 import urllib.request
 from collections.abc import Sequence
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -443,6 +443,35 @@ def test_compute_retrospective_rejects_forbidden_field_in_outcome_without_append
         )
 
     assert storage.append_calls == 0
+    assert storage.rows == []
+
+
+def test_in_memory_storage_rejects_forbidden_field_without_append() -> None:
+    storage = InMemoryRetrospectiveEvaluationStorage()
+    evaluation = RetrospectiveEvaluation(
+        evaluation_id="retro-cycle_20260410-recommendation-T+1",
+        cycle_id="cycle_20260410",
+        object_ref="recommendation",
+        horizon="T+1",
+        trend_deviation=2.0,
+        risk_deviation=1.0,
+        alert_score=2.0,
+        learning_score=1.6,
+        deviation_level=2,
+        hit_rate_rel=0.42,
+        baseline_vs_llm_breakdown={
+            "nested": {"feature_weight_multiplier": 1.2},
+        },
+        evaluated_at=datetime(2026, 4, 11, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(
+        BoundaryViolationError,
+        match=r"\$\.evaluations\[0\]\.baseline_vs_llm_breakdown\.nested"
+        r"\.feature_weight_multiplier",
+    ):
+        storage.append_evaluations([evaluation])
+
     assert storage.rows == []
 
 

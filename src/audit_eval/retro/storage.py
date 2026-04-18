@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import date
 from typing import Protocol
 
+from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.retro.schema import MarketOutcome, RetrospectiveTarget
@@ -60,6 +61,8 @@ class InMemoryRetrospectiveEvaluationStorage:
         evaluations: Sequence[RetrospectiveEvaluation],
     ) -> list[str]:
         rows = [evaluation.model_dump(mode="json") for evaluation in evaluations]
+        for index, row in enumerate(rows):
+            assert_no_forbidden_write(row, path=f"$.evaluations[{index}]")
         self.rows.extend(deepcopy(rows))
         return [evaluation.evaluation_id for evaluation in evaluations]
 
