@@ -9,6 +9,7 @@ from audit_eval.contracts.common import (
 )
 from audit_eval.contracts.manifest_draft import CyclePublishManifestDraft
 from audit_eval.contracts.replay_record import ReplayRecord
+from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.contracts.replay_draft import (
     AuditRecordDraft,
     ReplayBundleFields,
@@ -29,5 +30,6 @@ __all__ = [
     "ReplayRecord",
     "ReplayRecordDraft",
     "ReplayViewDraft",
+    "RetrospectiveEvaluation",
     "RetrospectiveHorizon",
 ]
