@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from importlib import import_module
@@ -123,10 +124,7 @@ class EvidentlyDataDriftRunner:
 
     def run(self, reference_data: Any, target_data: Any) -> EvidentlyRunResult:
         try:
-            report_module = import_module("evidently.report")
-            preset_module = import_module("evidently.metric_preset")
-            report_cls = getattr(report_module, "Report")
-            preset_cls = getattr(preset_module, "DataDriftPreset")
+            report_cls, preset_cls = _load_evidently_report_components()
         except Exception as exc:  # pragma: no cover - environment dependent
             raise DriftRunnerError(
                 "Evidently is unavailable; install runtime dependencies or pass "
@@ -135,8 +133,11 @@ class EvidentlyDataDriftRunner:
 
         report = report_cls(metrics=[preset_cls()])
         try:
-            report.run(reference_data=reference_data, current_data=target_data)
-            payload = _report_to_payload(report)
+            run_output = report.run(
+                reference_data=reference_data,
+                current_data=target_data,
+            )
+            payload = _report_to_payload(run_output or report)
         except Exception as exc:  # pragma: no cover - depends on Evidently internals
             raise DriftRunnerError(f"Evidently drift report failed: {exc}") from exc
 
@@ -145,7 +146,7 @@ class EvidentlyDataDriftRunner:
             report_json=payload,
             drifted_features=features,
             dataset_drift=_extract_dataset_drift(payload),
-            feature_count=len(features),
+            feature_count=_extract_feature_count(payload, features),
         )
 
 
@@ -184,6 +185,8 @@ def _report_to_payload(report: Any) -> JsonObject:
         payload = report.as_dict()
     elif hasattr(report, "json"):
         payload = json.loads(report.json())
+    elif hasattr(report, "dict"):
+        payload = report.dict()
     else:
         raise DriftRunnerError("Evidently report does not expose JSON payload output")
 
@@ -192,33 +195,99 @@ def _report_to_payload(report: Any) -> JsonObject:
     return payload
 
 
+def _load_evidently_report_components() -> tuple[type[Any], type[Any]]:
+    last_error: Exception | None = None
+    for report_module_name, preset_module_name in (
+        ("evidently.report", "evidently.metric_preset"),
+        ("evidently.core.report", "evidently.presets"),
+    ):
+        try:
+            report_module = import_module(report_module_name)
+            preset_module = import_module(preset_module_name)
+            return (
+                getattr(report_module, "Report"),
+                getattr(preset_module, "DataDriftPreset"),
+            )
+        except Exception as exc:  # pragma: no cover - environment dependent
+            last_error = exc
+
+    raise DriftRunnerError(
+        "No supported Evidently data drift API is available"
+    ) from last_error
+
+
 def _extract_drifted_features(payload: object) -> tuple[DriftedFeature, ...]:
     features: list[DriftedFeature] = []
     seen_names: set[str] = set()
     for item in _iter_mappings(payload):
-        name = _first_string(item, ("column_name", "feature_name", "name"))
-        if name is None or name in seen_names:
+        feature = _feature_from_mapping(item)
+        if feature is None or feature.name in seen_names:
             continue
+        seen_names.add(feature.name)
+        features.append(feature)
+    return tuple(features)
+
+
+def _feature_from_mapping(item: Mapping[str, Any]) -> DriftedFeature | None:
+    name = _first_string(item, ("column_name", "feature_name", "name"))
+    if name is not None:
         drifted_value = _first_existing(
             item,
             ("drift_detected", "drifted", "is_drifted"),
         )
         if drifted_value is None:
-            continue
-        seen_names.add(name)
-        features.append(
-            DriftedFeature(
-                name=name,
-                score=_first_number(
-                    item,
-                    ("drift_score", "score", "stattest_value", "p_value"),
-                ),
-                statistic=_first_number(item, ("statistic", "stattest_value")),
-                threshold=_first_number(item, ("threshold", "stattest_threshold")),
-                drifted=bool(drifted_value),
-            )
+            return None
+        return DriftedFeature(
+            name=name,
+            score=_first_number(
+                item,
+                ("drift_score", "score", "stattest_value", "p_value"),
+            ),
+            statistic=_first_number(item, ("statistic", "stattest_value")),
+            threshold=_first_number(item, ("threshold", "stattest_threshold")),
+            drifted=bool(drifted_value),
         )
-    return tuple(features)
+
+    config = item.get("config")
+    if not isinstance(config, Mapping):
+        return None
+    metric_type = str(config.get("type", ""))
+    metric_name = str(item.get("metric_name", ""))
+    if "ValueDrift" not in metric_type and "ValueDrift" not in metric_name:
+        return None
+
+    feature_name = _first_string(config, ("column", "column_name", "feature_name"))
+    if feature_name is None:
+        feature_name = _parse_metric_name_part(metric_name, "column")
+    if feature_name is None:
+        return None
+
+    score = _metric_value_number(item)
+    threshold = _first_number(config, ("threshold", "stattest_threshold"))
+    if threshold is None:
+        threshold = _parse_metric_name_number(metric_name, "threshold")
+
+    drifted_value = _first_existing(item, ("drift_detected", "drifted", "is_drifted"))
+    if drifted_value is None:
+        method = config.get("method") or _parse_metric_name_part(
+            metric_name,
+            "method",
+        )
+        drifted_value = _infer_value_drifted(
+            score=score,
+            threshold=threshold,
+            method=str(method or ""),
+        )
+    if drifted_value is None:
+        return None
+
+    return DriftedFeature(
+        name=feature_name,
+        score=score,
+        statistic=None,
+        threshold=threshold,
+        drifted=bool(drifted_value),
+    )
 
 
 def _extract_dataset_drift(payload: object) -> bool:
@@ -226,7 +295,95 @@ def _extract_dataset_drift(payload: object) -> bool:
         value = item.get("dataset_drift")
         if isinstance(value, bool):
             return value
+        if _is_drifted_columns_count_metric(item):
+            count = _metric_count(item)
+            if count is not None:
+                return count > 0
     return False
+
+
+def _extract_feature_count(
+    payload: object,
+    features: Sequence[DriftedFeature],
+) -> int:
+    observed_count = len(features)
+    for item in _iter_mappings(payload):
+        if not _is_drifted_columns_count_metric(item):
+            continue
+        count = _metric_count(item)
+        share = _metric_share(item)
+        if count is not None and share is not None and share > 0:
+            return max(observed_count, round(count / share))
+    return observed_count
+
+
+def _is_drifted_columns_count_metric(item: Mapping[str, Any]) -> bool:
+    config = item.get("config")
+    metric_type = str(config.get("type", "")) if isinstance(config, Mapping) else ""
+    metric_name = str(item.get("metric_name", ""))
+    return (
+        "DriftedColumnsCount" in metric_type
+        or "DriftedColumnsCount" in metric_name
+    )
+
+
+def _metric_count(item: Mapping[str, Any]) -> float | None:
+    value = item.get("value")
+    if isinstance(value, Mapping):
+        return _first_number(value, ("count", "drifted_count"))
+    return None
+
+
+def _metric_share(item: Mapping[str, Any]) -> float | None:
+    value = item.get("value")
+    if isinstance(value, Mapping):
+        return _first_number(value, ("share", "drift_share"))
+    return None
+
+
+def _metric_value_number(item: Mapping[str, Any]) -> float | None:
+    value = item.get("value")
+    if _is_number(value):
+        return float(value)
+    if isinstance(value, Mapping):
+        return _first_number(
+            value,
+            ("drift_score", "score", "stattest_value", "p_value", "value"),
+        )
+    return None
+
+
+def _infer_value_drifted(
+    *,
+    score: float | None,
+    threshold: float | None,
+    method: str,
+) -> bool | None:
+    if score is None or threshold is None:
+        return None
+    normalized_method = method.lower().replace("-", "_")
+    if "p_value" in normalized_method or "pvalue" in normalized_method:
+        return score < threshold
+    return score > threshold
+
+
+def _parse_metric_name_part(metric_name: str, key: str) -> str | None:
+    match = re.search(rf"(?:^|,){re.escape(key)}=([^,)]+)", metric_name)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    return value or None
+
+
+def _parse_metric_name_number(metric_name: str, key: str) -> float | None:
+    value = _parse_metric_name_part(metric_name, key)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if number == number else None
 
 
 def _iter_mappings(payload: object) -> tuple[Mapping[str, Any], ...]:
@@ -262,10 +419,14 @@ def _first_string(item: Mapping[str, Any], keys: Sequence[str]) -> str | None:
 
 def _first_number(item: Mapping[str, Any], keys: Sequence[str]) -> float | None:
     value = _first_existing(item, keys)
-    if isinstance(value, bool) or not isinstance(value, Real):
+    if not _is_number(value):
         return None
     number = float(value)
     return number if number == number else None
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, Real) and not isinstance(value, bool)
 
 
 __all__ = [

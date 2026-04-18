@@ -29,7 +29,8 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("Drift report tests must not call network")
 
     monkeypatch.setattr(urllib.request, "urlopen", fail_network_call)
-    monkeypatch.setattr(socket, "socket", fail_network_call)
+    monkeypatch.setattr(socket, "create_connection", fail_network_call)
+    monkeypatch.setattr(socket.socket, "connect", fail_network_call)
 
 
 class FixedRefJsonWriter:
@@ -217,6 +218,33 @@ def test_default_evidently_runner_reports_missing_lazy_import(
 
     with pytest.raises(DriftRunnerError, match="Evidently is unavailable"):
         EvidentlyDataDriftRunner().run([], [])
+
+
+def test_evidently_data_drift_runner_smoke_current_api() -> None:
+    pd = pytest.importorskip("pandas")
+    reference_data = pd.DataFrame(
+        {
+            "alpha": [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+            "beta": [1, 1, 1, 1, 1, 1],
+        }
+    )
+    target_data = pd.DataFrame(
+        {
+            "alpha": [5.0, 5.1, 5.2, 5.3, 5.4, 5.5],
+            "beta": [1, 1, 1, 1, 1, 1],
+        }
+    )
+
+    result = EvidentlyDataDriftRunner().run(reference_data, target_data)
+
+    assert result.report_json["metrics"]
+    features = {feature.name: feature for feature in result.drifted_features}
+    assert {"alpha", "beta"}.issubset(features)
+    assert features["alpha"].drifted is True
+    assert features["alpha"].score is not None
+    assert features["alpha"].threshold == pytest.approx(0.05)
+    assert features["beta"].drifted is False
+    assert result.feature_count >= 2
 
 
 def test_json_writer_protocol_is_runtime_shape_only() -> None:
