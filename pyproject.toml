@@ -9,6 +9,7 @@ description = "Scaffold workspace for audit-eval."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "evidently>=0.4",
     "pydantic>=2",
 ]
 
