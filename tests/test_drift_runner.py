@@ -40,21 +40,24 @@ class _BlankRefJsonWriter:
         return self.returned_ref
 
 
-class _FailingStorage:
+class _AppendingStorage:
     def __init__(
         self,
+        *,
         exc: Exception | None = None,
         report_id: str | None = None,
     ) -> None:
         self.exc = exc
         self.report_id = report_id
         self.append_calls = 0
+        self.rows: list[dict[str, Any]] = []
 
-    def append_drift_report(self, report: object) -> str:
+    def append_drift_report(self, report: Any) -> str:
         self.append_calls += 1
+        self.rows.append(report.model_dump(mode="json"))
         if self.exc is not None:
             raise self.exc
-        return self.report_id or getattr(report, "report_id")
+        return self.report_id or report.report_id
 
 
 @pytest.fixture(autouse=True)
@@ -254,11 +257,13 @@ def test_run_drift_report_rejects_blank_writer_ref_before_storage(
     assert storage.append_calls == 0
 
 
-def test_run_drift_report_cleans_up_json_when_storage_fails() -> None:
+def test_run_drift_report_retains_json_when_storage_fails_after_append() -> None:
     json_writer = InMemoryDriftReportJsonWriter()
-    storage = _FailingStorage(RuntimeError("warehouse unavailable"))
+    storage = _AppendingStorage(
+        exc=DriftStorageError("warehouse unavailable after append")
+    )
 
-    with pytest.raises(DriftStorageError, match="append_drift_report"):
+    with pytest.raises(DriftStorageError, match="warehouse unavailable after append"):
         run_drift_report(
             "baseline",
             "target",
@@ -272,12 +277,16 @@ def test_run_drift_report_cleans_up_json_when_storage_fails() -> None:
         )
 
     assert storage.append_calls == 1
-    assert json_writer.payloads_by_report_id == {}
+    report_id = storage.rows[0]["report_id"]
+    assert set(json_writer.payloads_by_report_id) == {report_id}
+    assert storage.rows[0]["evidently_json_ref"] == (
+        f"memory://drift-report-json/{report_id}.json"
+    )
 
 
-def test_run_drift_report_rejects_storage_report_id_mismatch() -> None:
+def test_run_drift_report_rejects_storage_report_id_mismatch_without_deleting_json() -> None:
     json_writer = InMemoryDriftReportJsonWriter()
-    storage = _FailingStorage(report_id="drift-other")
+    storage = _AppendingStorage(report_id="drift-other")
 
     with pytest.raises(DriftStorageError, match="mismatched report_id"):
         run_drift_report(
@@ -293,7 +302,12 @@ def test_run_drift_report_rejects_storage_report_id_mismatch() -> None:
         )
 
     assert storage.append_calls == 1
-    assert json_writer.payloads_by_report_id == {}
+    report_id = storage.rows[0]["report_id"]
+    assert report_id != "drift-other"
+    assert set(json_writer.payloads_by_report_id) == {report_id}
+    assert storage.rows[0]["evidently_json_ref"] == (
+        f"memory://drift-report-json/{report_id}.json"
+    )
 
 
 def test_invalid_rules_version_fails_before_writer_or_storage() -> None:

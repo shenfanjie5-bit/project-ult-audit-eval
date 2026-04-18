@@ -128,13 +128,10 @@ def run_drift_report(
     try:
         persisted_id = report_storage.append_drift_report(report)
     except DriftStorageError:
-        _cleanup_report_json(writer, report_id)
         raise
     except Exception as exc:
-        _cleanup_report_json(writer, report_id)
         raise DriftStorageError(f"append_drift_report failed: {exc}") from exc
     if persisted_id != report.report_id:
-        _cleanup_report_json(writer, report_id)
         raise DriftStorageError(
             "Drift report storage returned mismatched report_id: "
             f"{persisted_id!r} != {report.report_id!r}"
