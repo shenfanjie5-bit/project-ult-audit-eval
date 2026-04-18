@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from audit_eval._boundary import BoundaryViolationError
 from audit_eval.contracts import DriftReport
 from audit_eval.drift import (
+    DriftRuleConfig,
     DriftedFeature,
     EvidentlyRunResult,
     InMemoryDriftInputGateway,
@@ -14,6 +15,7 @@ from audit_eval.drift import (
     InMemoryEvidentlyRunner,
     run_drift_report,
 )
+import audit_eval.drift.runner as drift_runner_module
 from audit_eval.drift.storage import InMemoryDriftReportJsonWriter
 
 
@@ -77,6 +79,7 @@ def _run_with_result(
     gateway: InMemoryDriftInputGateway | None = None,
     writer: InMemoryDriftReportJsonWriter | None = None,
     storage: InMemoryDriftReportStorage | None = None,
+    rules: DriftRuleConfig | None = None,
 ) -> None:
     run_drift_report(
         "baseline",
@@ -91,6 +94,7 @@ def _run_with_result(
         evidently_runner=InMemoryEvidentlyRunner(result),
         json_writer=writer or InMemoryDriftReportJsonWriter(),
         storage=storage or InMemoryDriftReportStorage(),
+        rules=rules,
         created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
     )
 
@@ -143,6 +147,28 @@ def test_drift_report_rejects_control_feature_name_string_values() -> None:
         DriftReport.model_validate(payload)
 
 
+@pytest.mark.parametrize("warning_level", ["warning", "critical"])
+def test_drift_report_rejects_alert_without_feature_evidence(
+    warning_level: str,
+) -> None:
+    payload = _valid_report_payload()
+    payload["regime_warning_level"] = warning_level
+    payload["drifted_features"] = {"features": []}
+
+    with pytest.raises(ValidationError, match="at least one drifted feature"):
+        DriftReport.model_validate(payload)
+
+
+def test_drift_report_rejects_malformed_feature_evidence() -> None:
+    payload = _valid_report_payload()
+    payload["drifted_features"] = {
+        "features": [{"name": "alpha", "score": 0.7, "drifted": True}]
+    }
+
+    with pytest.raises(ValidationError, match="threshold"):
+        DriftReport.model_validate(payload)
+
+
 def test_runner_rejects_evidently_json_forbidden_field_before_writes() -> None:
     writer = InMemoryDriftReportJsonWriter()
     storage = InMemoryDriftReportStorage()
@@ -187,6 +213,114 @@ def test_runner_rejects_control_feature_name_in_evidently_json_before_writes() -
 
     with pytest.raises(BoundaryViolationError, match="feature_name"):
         _run_with_result(result, writer=writer, storage=storage)
+
+    assert writer.calls == []
+    assert storage.rows == []
+
+
+@pytest.mark.parametrize(
+    ("reference_ref", "target_ref", "cycle_id"),
+    [
+        ("feature_weight_multiplier", "target", None),
+        ("baseline", "feature://feature_weight_multiplier", None),
+        ("baseline", "target", "cycle_feature_weight_multiplier"),
+        ("baseline", "target", "online_control"),
+    ],
+)
+def test_runner_rejects_forbidden_scalar_inputs_before_writes(
+    reference_ref: str,
+    target_ref: str,
+    cycle_id: str | None,
+) -> None:
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+    runner = InMemoryEvidentlyRunner(_safe_result())
+    gateway = InMemoryDriftInputGateway(
+        {
+            "baseline": {"alpha": [1]},
+            "target": {"alpha": [2]},
+            "feature_weight_multiplier": {"alpha": [3]},
+            "feature://feature_weight_multiplier": {"alpha": [4]},
+        }
+    )
+
+    with pytest.raises(
+        BoundaryViolationError,
+        match="feature_weight_multiplier|online_control",
+    ):
+        run_drift_report(
+            reference_ref,
+            target_ref,
+            cycle_id=cycle_id,
+            input_gateway=gateway,
+            evidently_runner=runner,
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert gateway.loaded_refs == []
+    assert runner.calls == []
+    assert writer.calls == []
+    assert storage.rows == []
+
+
+def test_runner_rejects_forbidden_report_id_before_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+    monkeypatch.setattr(
+        drift_runner_module,
+        "_build_report_id",
+        lambda *_args: "drift-feature_weight_multiplier-target",
+    )
+
+    with pytest.raises(BoundaryViolationError, match="feature_weight_multiplier"):
+        run_drift_report(
+            "baseline",
+            "target",
+            input_gateway=InMemoryDriftInputGateway(
+                {
+                    "baseline": {"alpha": [1]},
+                    "target": {"alpha": [2]},
+                }
+            ),
+            evidently_runner=InMemoryEvidentlyRunner(_safe_result()),
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert writer.calls == []
+    assert storage.rows == []
+
+
+def test_runner_rejects_warning_without_feature_evidence_before_writes() -> None:
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+    result = EvidentlyRunResult(
+        report_json={"metrics": []},
+        drifted_features=(),
+        feature_count=0,
+    )
+
+    with pytest.raises(ValidationError, match="at least one drifted feature"):
+        _run_with_result(
+            result,
+            writer=writer,
+            storage=storage,
+            gateway=InMemoryDriftInputGateway(
+                {
+                    "baseline": {"alpha": [1]},
+                    "target": {"alpha": [2]},
+                }
+            ),
+            rules=DriftRuleConfig(
+                warning_drift_share=0.0,
+                critical_drift_share=1.0,
+                warning_drifted_feature_count=10,
+                critical_drifted_feature_count=10,
+            ),
+        )
 
     assert writer.calls == []
     assert storage.rows == []

@@ -7,7 +7,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from audit_eval._boundary import assert_no_forbidden_write
+from audit_eval._boundary import (
+    BoundaryViolationError,
+    FORBIDDEN_WRITE_FIELDS,
+    assert_no_forbidden_write,
+)
 from audit_eval.contracts.common import JsonObject
 from audit_eval.contracts.drift_report import (
     DriftReport,
@@ -33,6 +37,10 @@ from audit_eval.drift.storage import (
 )
 
 _REPORT_ID_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_DRIFT_CONTROL_SCALAR_TOKENS = frozenset(
+    (*FORBIDDEN_WRITE_FIELDS, "_".join(("online", "control")))
+)
+_PREWRITE_EVIDENTLY_JSON_REF = "pending://drift-report-json"
 
 
 def run_drift_report(
@@ -48,6 +56,12 @@ def run_drift_report(
     created_at: datetime | None = None,
 ) -> DriftReport:
     """Generate, persist, and return one analytical drift report."""
+
+    _assert_safe_report_scalars(
+        reference_ref=reference_ref,
+        target_ref=target_ref,
+        cycle_id=cycle_id,
+    )
 
     gateway = input_gateway or get_default_input_gateway()
     reference_data = gateway.load_feature_window(reference_ref)
@@ -79,6 +93,16 @@ def run_drift_report(
 
     effective_created_at = _normalize_created_at(created_at)
     report_id = _build_report_id(reference_ref, target_ref, effective_created_at)
+    _assert_safe_optional_scalar(report_id, path="$.report_id")
+    _prevalidate_report_contract(
+        report_id=report_id,
+        cycle_id=cycle_id,
+        reference_ref=reference_ref,
+        target_ref=target_ref,
+        drifted_features=drifted_features,
+        regime_warning_level=decision.regime_warning_level,
+        created_at=effective_created_at,
+    )
 
     writer = json_writer or get_default_json_writer()
     evidently_json_ref = writer.write_report_json(report_id, result.report_json)
@@ -165,6 +189,58 @@ def _normalize_created_at(created_at: datetime | None) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _assert_safe_report_scalars(
+    *,
+    reference_ref: str,
+    target_ref: str,
+    cycle_id: str | None,
+) -> None:
+    _assert_safe_optional_scalar(reference_ref, path="$.reference_ref")
+    _assert_safe_optional_scalar(target_ref, path="$.target_ref")
+    _assert_safe_optional_scalar(cycle_id, path="$.cycle_id")
+
+
+def _assert_safe_optional_scalar(value: str | None, *, path: str) -> None:
+    if value is None:
+        return
+
+    assert_no_forbidden_write(value, path=path)
+    assert_no_drift_control_write(value, path=path)
+
+    normalized_value = value.strip().lower()
+    forbidden_tokens = tuple(
+        token
+        for token in sorted(_DRIFT_CONTROL_SCALAR_TOKENS)
+        if token in normalized_value
+    )
+    if forbidden_tokens:
+        fields = ", ".join(f"{path} ({token})" for token in forbidden_tokens)
+        raise BoundaryViolationError(f"Forbidden drift control field(s): {fields}")
+
+
+def _prevalidate_report_contract(
+    *,
+    report_id: str,
+    cycle_id: str | None,
+    reference_ref: str,
+    target_ref: str,
+    drifted_features: JsonObject,
+    regime_warning_level: str,
+    created_at: datetime,
+) -> None:
+    DriftReport(
+        report_id=report_id,
+        cycle_id=cycle_id,
+        baseline_ref=reference_ref,
+        target_ref=target_ref,
+        evidently_json_ref=_PREWRITE_EVIDENTLY_JSON_REF,
+        drifted_features=drifted_features,
+        regime_warning_level=regime_warning_level,
+        alert_rules_version=ALERT_RULES_VERSION,
+        created_at=created_at,
+    )
 
 
 __all__ = [

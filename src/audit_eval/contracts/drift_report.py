@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from numbers import Real
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -57,6 +59,10 @@ class DriftReport(BaseModel):
             path="$.drifted_features",
         )
         assert_no_drift_control_write(self.model_dump(mode="python"), path="$")
+        _validate_drifted_features_evidence(
+            self.drifted_features,
+            self.regime_warning_level,
+        )
         return self
 
 
@@ -138,6 +144,68 @@ def _iter_tabular_column_names(payload: object) -> tuple[str, ...]:
 
 def _is_control_name(name: str) -> bool:
     return name.strip().lower() in _CONTROL_FIELD_NAMES
+
+
+def _validate_drifted_features_evidence(
+    payload: JsonObject,
+    warning_level: RegimeWarningLevelValue,
+) -> None:
+    features = payload.get("features")
+    if not isinstance(features, list):
+        raise ValueError("drifted_features.features must be a list")
+
+    drifted_evidence_count = 0
+    for index, feature in enumerate(features):
+        if not isinstance(feature, Mapping):
+            raise ValueError(
+                f"drifted_features.features[{index}] must be an object"
+            )
+
+        name = feature.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"drifted_features.features[{index}].name must be a non-empty string"
+            )
+
+        drifted = feature.get("drifted")
+        if not isinstance(drifted, bool):
+            raise ValueError(
+                f"drifted_features.features[{index}].drifted must be a boolean"
+            )
+
+        if not _has_numeric_score_or_statistic(feature):
+            raise ValueError(
+                f"drifted_features.features[{index}] must include numeric "
+                "score or statistic"
+            )
+
+        if "threshold" not in feature or not _is_json_number(feature["threshold"]):
+            raise ValueError(
+                f"drifted_features.features[{index}].threshold must be a number"
+            )
+
+        if drifted:
+            drifted_evidence_count += 1
+
+    if warning_level in {"warning", "critical"} and drifted_evidence_count == 0:
+        raise ValueError(
+            "warning and critical drift reports require at least one drifted "
+            "feature evidence object"
+        )
+
+
+def _has_numeric_score_or_statistic(feature: Mapping[str, object]) -> bool:
+    return _is_json_number(feature.get("score")) or _is_json_number(
+        feature.get("statistic")
+    )
+
+
+def _is_json_number(value: object) -> bool:
+    return (
+        isinstance(value, Real)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 __all__ = [
