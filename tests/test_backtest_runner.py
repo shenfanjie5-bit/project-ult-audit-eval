@@ -71,11 +71,16 @@ class _RecordingAdapter:
         self.call_log = call_log
         self.metrics = _metrics() if metrics is None else metrics
         self.exc = exc
-        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.calls: list[tuple[str, dict[str, object], dict[str, object]]] = []
 
-    def run(self, feature_ref: str, snapshot_range: dict[str, object]) -> Any:
+    def run(
+        self,
+        feature_ref: str,
+        snapshot_range: dict[str, object],
+        metrics_config: dict[str, object],
+    ) -> Any:
         self.call_log.append("adapter")
-        self.calls.append((feature_ref, snapshot_range))
+        self.calls.append((feature_ref, snapshot_range, metrics_config))
         if self.exc is not None:
             raise self.exc
         return self.metrics
@@ -153,7 +158,7 @@ def test_run_backtest_validates_pit_then_adapter_then_storage() -> None:
 
     assert call_log == ["pit", "adapter", "storage"]
     assert pit_checker.calls == [("feature://momentum/v1", _snapshot_range())]
-    assert adapter.calls == [("feature://momentum/v1", _snapshot_range())]
+    assert adapter.calls == [("feature://momentum/v1", _snapshot_range(), {})]
     assert result.metrics == _metrics()
     assert result.pit_check_passed is True
     assert storage.append_calls == 1
@@ -217,6 +222,37 @@ def test_run_backtest_wraps_adapter_exceptions() -> None:
     assert storage.rows == []
 
 
+def test_run_backtest_passes_copied_metrics_config_to_adapter() -> None:
+    call_log: list[str] = []
+    pit_checker = _RecordingPITChecker(call_log)
+    adapter = _RecordingAdapter(call_log)
+    storage = _RecordingStorage(call_log)
+    metrics_config = {"period": 5, "nested": {"enabled": True}}
+    job = BacktestJob(
+        job_ref="job://alphalens-1",
+        feature_ref="feature://momentum/v1",
+        formal_snapshot_range=_snapshot_range(),
+        metrics_config=metrics_config,
+    )
+
+    run_backtest(
+        job,
+        pit_checker=pit_checker,  # type: ignore[arg-type]
+        adapter=adapter,
+        storage=storage,
+        created_at=_created_at(),
+    )
+    metrics_config["period"] = 1
+    adapter.calls[0][2]["period"] = 9
+
+    assert adapter.calls[0] == (
+        "feature://momentum/v1",
+        _snapshot_range(),
+        {"period": 9, "nested": {"enabled": True}},
+    )
+    assert job.metrics_config == {"period": 5, "nested": {"enabled": True}}
+
+
 def test_run_backtest_wraps_storage_exceptions_without_half_write() -> None:
     call_log: list[str] = []
     storage = _RecordingStorage(call_log, exc=ValueError("disk unavailable"))
@@ -267,6 +303,28 @@ def test_writer_rejects_failed_pit_even_if_contract_validation_was_bypassed() ->
 
     assert storage.append_calls == 0
     assert storage.rows == []
+
+
+def test_writer_rejects_storage_backtest_id_mismatch() -> None:
+    class MismatchedStorage(InMemoryBacktestResultStorage):
+        def append_backtest_result(self, result: BacktestResult) -> str:
+            super().append_backtest_result(result)
+            return "backtest-other"
+
+    result = BacktestResult(
+        backtest_id="backtest-expected",
+        job_ref="job://alphalens-1",
+        engine="alphalens",
+        feature_ref="feature://momentum/v1",
+        formal_snapshot_range=_snapshot_range(),
+        metrics=_metrics(),
+        pit_check_passed=True,
+        created_at=_created_at(),
+    )
+    storage = MismatchedStorage()
+
+    with pytest.raises(BacktestStorageError, match="mismatched backtest_id"):
+        persist_backtest_result(result, storage=storage)
 
 
 @pytest.mark.parametrize(

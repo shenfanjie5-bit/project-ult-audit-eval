@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from audit_eval.contracts.common import JsonObject, LayerName
 
@@ -35,6 +35,17 @@ class AuditRecord(BaseModel):
     output_hash: str | None
     degradation_flags: JsonObject
     created_at: datetime
+
+    @field_validator("llm_lineage", mode="after")
+    @classmethod
+    def validate_llm_lineage_called_flag(cls, value: JsonObject) -> JsonObject:
+        """Require an explicit typed LLM call marker."""
+
+        if "called" not in value:
+            raise ValueError("llm_lineage.called must be present")
+        if not isinstance(value["called"], bool):
+            raise ValueError("llm_lineage.called must be a boolean")
+        return value
 
     @model_validator(mode="after")
     def require_replay_fields_when_llm_called(self) -> Self:

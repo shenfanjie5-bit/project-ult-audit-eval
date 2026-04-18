@@ -94,52 +94,47 @@ def extract_retrospective_seed(replay_view: ReplayView) -> RetrospectiveSeed:
     for audit_record in replay_view.audit_records:
         if audit_record.object_ref != replay_view.object_ref:
             continue
-        for source_name, payload in (
-            ("parsed_result", audit_record.parsed_result),
-            ("params_snapshot", audit_record.params_snapshot),
-        ):
-            if not isinstance(payload, Mapping):
-                continue
-            seed_payload = payload.get("retrospective_seed")
-            if seed_payload is None:
-                continue
-            if not isinstance(seed_payload, Mapping):
-                raise RetrospectiveInputError(
-                    f"AuditRecord.{source_name}.retrospective_seed must be an object"
-                )
-            assert_no_forbidden_write(
-                seed_payload,
-                path=f"$.audit_records[{audit_record.record_id}].{source_name}"
-                ".retrospective_seed",
+        seed_entry = _select_retrospective_seed_payload(audit_record)
+        if seed_entry is None:
+            continue
+        source_name, seed_payload = seed_entry
+        assert_no_forbidden_write(
+            seed_payload,
+            path=f"$.audit_records[{audit_record.record_id}].{source_name}"
+            ".retrospective_seed",
+        )
+        trend_score = _require_finite_number(
+            seed_payload.get("trend_score"),
+            field_path="retrospective_seed.trend_score",
+        )
+        risk_score = _require_finite_number(
+            seed_payload.get("risk_score"),
+            field_path="retrospective_seed.risk_score",
+        )
+        breakdown = seed_payload.get("baseline_vs_llm_breakdown", {})
+        if not isinstance(breakdown, dict):
+            raise RetrospectiveInputError(
+                "retrospective_seed.baseline_vs_llm_breakdown must be an object"
             )
-            trend_score = _require_finite_number(
-                seed_payload.get("trend_score"),
-                field_path="retrospective_seed.trend_score",
+        seeds.append(
+            RetrospectiveSeed(
+                cycle_id=replay_view.cycle_id,
+                object_ref=replay_view.object_ref,
+                expected_trend_score=trend_score,
+                expected_risk_score=risk_score,
+                baseline_vs_llm_breakdown=dict(breakdown),
             )
-            risk_score = _require_finite_number(
-                seed_payload.get("risk_score"),
-                field_path="retrospective_seed.risk_score",
-            )
-            breakdown = seed_payload.get("baseline_vs_llm_breakdown", {})
-            if not isinstance(breakdown, dict):
-                raise RetrospectiveInputError(
-                    "retrospective_seed.baseline_vs_llm_breakdown must be an object"
-                )
-            seeds.append(
-                RetrospectiveSeed(
-                    cycle_id=replay_view.cycle_id,
-                    object_ref=replay_view.object_ref,
-                    expected_trend_score=trend_score,
-                    expected_risk_score=risk_score,
-                    baseline_vs_llm_breakdown=dict(breakdown),
-                )
-            )
+        )
 
-    if len(seeds) == 1:
-        return seeds[0]
-    if len(seeds) > 1:
+    unique_seeds: list[RetrospectiveSeed] = []
+    for seed in seeds:
+        if seed not in unique_seeds:
+            unique_seeds.append(seed)
+    if len(unique_seeds) == 1:
+        return unique_seeds[0]
+    if len(unique_seeds) > 1:
         raise RetrospectiveInputError(
-            "ReplayView.audit_records contained multiple retrospective_seed values "
+            "ReplayView.audit_records contained conflicting retrospective_seed values "
             f"for object_ref={replay_view.object_ref!r}"
         )
     raise RetrospectiveInputError(
@@ -154,11 +149,13 @@ def calculate_deviation(
 ) -> DeviationResult:
     """Calculate absolute trend/risk deviations."""
 
+    breakdown = dict(seed.baseline_vs_llm_breakdown)
+    breakdown.update(outcome.baseline_vs_llm_breakdown)
     return DeviationResult(
         trend_deviation=abs(seed.expected_trend_score - outcome.realized_trend_score),
         risk_deviation=abs(seed.expected_risk_score - outcome.realized_risk_score),
         hit_rate_rel=outcome.hit_rate_rel,
-        baseline_vs_llm_breakdown=dict(outcome.baseline_vs_llm_breakdown),
+        baseline_vs_llm_breakdown=breakdown,
     )
 
 
@@ -186,6 +183,26 @@ def _validate_outcome_binding(
             outcome.hit_rate_rel,
             field_path="MarketOutcome.hit_rate_rel",
         )
+
+
+def _select_retrospective_seed_payload(
+    audit_record: Any,
+) -> tuple[str, Mapping[str, Any]] | None:
+    for source_name, payload in (
+        ("parsed_result", audit_record.parsed_result),
+        ("params_snapshot", audit_record.params_snapshot),
+    ):
+        if not isinstance(payload, Mapping):
+            continue
+        seed_payload = payload.get("retrospective_seed")
+        if seed_payload is None:
+            continue
+        if not isinstance(seed_payload, Mapping):
+            raise RetrospectiveInputError(
+                f"AuditRecord.{source_name}.retrospective_seed must be an object"
+            )
+        return source_name, seed_payload
+    return None
 
 
 def _require_finite_number(value: Any, *, field_path: str) -> float:

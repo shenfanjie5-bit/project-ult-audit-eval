@@ -30,6 +30,21 @@ class AuditWriteBundle(BaseModel):
         """Validate replay references and package-level forbidden write fields."""
 
         assert_no_forbidden_write(self.model_dump(mode="python"))
+        _require_unique(
+            [record.record_id for record in self.audit_records],
+            field_name="AuditRecord.record_id",
+        )
+        _require_unique(
+            [record.replay_id for record in self.replay_records],
+            field_name="ReplayRecord.replay_id",
+        )
+        _require_unique(
+            [
+                f"{record.cycle_id}\0{record.object_ref}"
+                for record in self.replay_records
+            ],
+            field_name="ReplayRecord.cycle_id/object_ref",
+        )
 
         audit_records_by_id = self.audit_records_by_id()
         for audit_record in self.audit_records:
@@ -85,6 +100,18 @@ class AuditWriteBundle(BaseModel):
         """Return replay records keyed by object_ref."""
 
         return {record.object_ref: record for record in self.replay_records}
+
+
+def _require_unique(values: list[str], *, field_name: str) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen and value not in duplicates:
+            duplicates.append(value)
+        seen.add(value)
+    if duplicates:
+        duplicate_text = ", ".join(duplicates)
+        raise ValueError(f"{field_name} values must be unique: {duplicate_text}")
 
 
 __all__ = ["AuditWriteBundle"]

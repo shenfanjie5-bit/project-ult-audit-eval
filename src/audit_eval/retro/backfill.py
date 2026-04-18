@@ -18,6 +18,7 @@ from audit_eval.retro.storage import (
     RetrospectiveEvaluationReader,
     RetrospectiveEvaluationStorage,
     RetrospectiveEvaluationWriteResult,
+    RetrospectiveInputError,
     RetrospectiveInputGateway,
     RetrospectiveStorageError,
     get_default_evaluation_reader,
@@ -63,6 +64,7 @@ def run_backfill(
     date_ref: date,
     horizons: Sequence[RetrospectiveHorizon] = HORIZONS,
     *,
+    object_ref: str | None = None,
     replay_context: ReplayQueryContext | None = None,
     input_gateway: RetrospectiveInputGateway | None = None,
     storage: RetrospectiveEvaluationStorage | None = None,
@@ -72,6 +74,7 @@ def run_backfill(
     """Run an idempotent backfill for all requested mature horizons."""
 
     requested_horizons = _normalize_horizons(horizons)
+    normalized_object_ref = _normalize_optional_object_ref(object_ref)
     effective_as_of_date = as_of_date or date.today()
     for horizon in requested_horizons:
         require_mature_horizon(horizon, date_ref, effective_as_of_date)
@@ -84,15 +87,29 @@ def run_backfill(
         gateway,
         requested_horizons,
         date_ref,
+        object_ref=normalized_object_ref,
+    )
+    _require_requested_object_ref_targets(
+        targets_by_horizon,
+        requested_horizons,
+        object_ref=normalized_object_ref,
+    )
+    existing_before_by_id = _load_existing_evaluations_by_id(
+        evaluation_reader,
+        targets_by_horizon,
+    )
+    targets_to_compute_by_horizon = _missing_targets_by_horizon(
+        targets_by_horizon,
+        existing_before_by_id,
     )
 
     collector = _CollectingEvaluationStorage()
     filtered_gateway = _BackfillInputGateway(
         delegate=gateway,
-        targets_by_horizon=targets_by_horizon,
+        targets_by_horizon=targets_to_compute_by_horizon,
     )
     for horizon in requested_horizons:
-        if not targets_by_horizon[horizon]:
+        if not targets_to_compute_by_horizon[horizon]:
             continue
         compute_retrospective(
             horizon,
@@ -103,13 +120,22 @@ def run_backfill(
             as_of_date=effective_as_of_date,
         )
 
-    write_result = _upsert_evaluations_by_id(
-        evaluation_storage,
-        collector.evaluations,
+    write_result = (
+        _upsert_evaluations_by_id(evaluation_storage, collector.evaluations)
+        if collector.evaluations
+        else RetrospectiveEvaluationWriteResult(
+            written_evaluation_ids=(),
+            skipped_existing_ids=(),
+        )
     )
     persisted_evaluations_by_id = _load_existing_evaluations_by_id(
         evaluation_reader,
         targets_by_horizon,
+    )
+    skipped_existing_ids = _merge_skipped_existing_ids(
+        targets_by_horizon,
+        existing_before_by_id,
+        write_result.skipped_existing_ids,
     )
 
     object_refs = _object_refs_for_targets(targets_by_horizon, requested_horizons)
@@ -119,9 +145,13 @@ def run_backfill(
         object_refs=object_refs,
     )
     return RetrospectiveBackfillResult(
-        job=RetrospectiveJob(date_ref=date_ref, horizons=requested_horizons),
+        job=RetrospectiveJob(
+            date_ref=date_ref,
+            horizons=requested_horizons,
+            object_ref=normalized_object_ref,
+        ),
         written_evaluation_ids=write_result.written_evaluation_ids,
-        skipped_existing_ids=write_result.skipped_existing_ids,
+        skipped_existing_ids=skipped_existing_ids,
         coverage=coverage,
     )
 
@@ -230,6 +260,17 @@ def _normalize_horizons(
     return normalized
 
 
+def _normalize_optional_object_ref(object_ref: str | None) -> str | None:
+    if object_ref is None:
+        return None
+    if not isinstance(object_ref, str):
+        raise RetrospectiveInputError("object_ref must be a string")
+    stripped = object_ref.strip()
+    if not stripped:
+        raise RetrospectiveInputError("object_ref must not be empty")
+    return stripped
+
+
 def _resolve_reader(
     reader: RetrospectiveEvaluationReader | None,
     storage: RetrospectiveEvaluationStorage,
@@ -245,10 +286,16 @@ def _load_targets_by_horizon(
     gateway: RetrospectiveInputGateway,
     horizons: Sequence[RetrospectiveHorizon],
     date_ref: date,
+    *,
+    object_ref: str | None,
 ) -> dict[RetrospectiveHorizon, list[RetrospectiveTarget]]:
     targets_by_horizon: dict[RetrospectiveHorizon, list[RetrospectiveTarget]] = {}
     for horizon in horizons:
-        targets = list(gateway.list_targets(horizon, date_ref))
+        targets = [
+            target
+            for target in gateway.list_targets(horizon, date_ref)
+            if object_ref is None or target.object_ref == object_ref
+        ]
         for index, target in enumerate(targets):
             assert_no_forbidden_write(
                 asdict(target),
@@ -256,6 +303,35 @@ def _load_targets_by_horizon(
             )
         targets_by_horizon[horizon] = targets
     return targets_by_horizon
+
+
+def _require_requested_object_ref_targets(
+    targets_by_horizon: dict[RetrospectiveHorizon, list[RetrospectiveTarget]],
+    horizons: Sequence[RetrospectiveHorizon],
+    *,
+    object_ref: str | None,
+) -> None:
+    if object_ref is None:
+        return
+    if any(targets_by_horizon[horizon] for horizon in horizons):
+        return
+    raise RetrospectiveInputError(
+        f"No retrospective targets found for object_ref={object_ref!r}"
+    )
+
+
+def _missing_targets_by_horizon(
+    targets_by_horizon: dict[RetrospectiveHorizon, list[RetrospectiveTarget]],
+    existing_by_id: dict[str, RetrospectiveEvaluation],
+) -> dict[RetrospectiveHorizon, list[RetrospectiveTarget]]:
+    missing: dict[RetrospectiveHorizon, list[RetrospectiveTarget]] = {}
+    for horizon, targets in targets_by_horizon.items():
+        missing[horizon] = [
+            target
+            for target in targets
+            if _evaluation_id(target, horizon) not in existing_by_id
+        ]
+    return missing
 
 
 def _load_existing_evaluations_by_id(
@@ -282,6 +358,24 @@ def _load_existing_evaluations_by_id(
             if evaluation.evaluation_id in expected_ids:
                 existing.setdefault(evaluation.evaluation_id, evaluation)
     return existing
+
+
+def _merge_skipped_existing_ids(
+    targets_by_horizon: dict[RetrospectiveHorizon, list[RetrospectiveTarget]],
+    existing_before_by_id: dict[str, RetrospectiveEvaluation],
+    storage_skipped_ids: Sequence[str],
+) -> tuple[str, ...]:
+    skipped: list[str] = []
+    storage_skipped_set = set(storage_skipped_ids)
+    for horizon, targets in targets_by_horizon.items():
+        for target in targets:
+            evaluation_id = _evaluation_id(target, horizon)
+            if (
+                evaluation_id in existing_before_by_id
+                or evaluation_id in storage_skipped_set
+            ) and evaluation_id not in skipped:
+                skipped.append(evaluation_id)
+    return tuple(skipped)
 
 
 def _upsert_evaluations_by_id(

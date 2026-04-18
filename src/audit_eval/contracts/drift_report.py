@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from numbers import Real
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -37,6 +38,17 @@ class DriftedFeatureEvidence(BaseModel):
         """Normalize feature names and reject whitespace-only values."""
 
         return _strip_non_blank_string(value, field_name="drifted feature name")
+
+    @field_validator("score", "statistic", "threshold", mode="before")
+    @classmethod
+    def reject_bool_or_non_real_numeric_evidence(cls, value: object) -> object:
+        """Reject bool and non-real values before Pydantic float coercion."""
+
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError("drift evidence numeric fields must be real numbers")
+        return value
 
     @model_validator(mode="after")
     def validate_feature_evidence(self) -> Self:

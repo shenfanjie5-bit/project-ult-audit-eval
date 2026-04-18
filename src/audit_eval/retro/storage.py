@@ -13,12 +13,15 @@ from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.retro.alert import AlertState
+from audit_eval.retro.dates import filter_evaluations_for_window
 from audit_eval.retro.schema import (
     MarketOutcome,
     RetroWindow,
     RetrospectiveSummary,
     RetrospectiveTarget,
 )
+
+_CurrentViewKey = tuple[str, RetrospectiveHorizon, str | None]
 
 
 class RetrospectiveStorageError(RuntimeError):
@@ -149,10 +152,8 @@ class InMemoryRetrospectiveEvaluationStorage:
     ) -> list[RetrospectiveEvaluation]:
         with self._lock:
             rows = deepcopy(self.rows)
-        evaluations = [
-            RetrospectiveEvaluation.model_validate(row) for row in rows
-        ]
-        return _filter_evaluations(evaluations, window)
+        evaluations = [RetrospectiveEvaluation.model_validate(row) for row in rows]
+        return filter_evaluations_for_window(evaluations, window)
 
 
 class InMemoryRetrospectiveEvaluationReader:
@@ -167,7 +168,7 @@ class InMemoryRetrospectiveEvaluationReader:
         window: RetroWindow,
     ) -> list[RetrospectiveEvaluation]:
         self.loaded_windows.append(window)
-        return _filter_evaluations(self.evaluations, window)
+        return filter_evaluations_for_window(self.evaluations, window)
 
 
 class InMemoryRetrospectiveCurrentViewStorage:
@@ -176,46 +177,90 @@ class InMemoryRetrospectiveCurrentViewStorage:
     def __init__(self) -> None:
         self.summary_rows: list[dict[str, object]] = []
         self.alert_state_rows: list[dict[str, object]] = []
+        self._summary_keys: list[tuple[object, ...]] = []
+        self._alert_state_keys: list[tuple[object, ...]] = []
+        self._lock = Lock()
 
     def upsert_summary_and_alert_state(
         self,
         summary: RetrospectiveSummary,
         alert_state: AlertState,
     ) -> tuple[str, str]:
-        summary_rows_snapshot = deepcopy(self.summary_rows)
-        alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
-        try:
-            summary_id = self.upsert_summary(summary)
-            alert_state_id = self.upsert_alert_state(alert_state)
-        except Exception:
-            self.summary_rows = summary_rows_snapshot
-            self.alert_state_rows = alert_state_rows_snapshot
-            raise
+        with self._lock:
+            summary_rows_snapshot = deepcopy(self.summary_rows)
+            alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
+            summary_keys_snapshot = deepcopy(self._summary_keys)
+            alert_state_keys_snapshot = deepcopy(self._alert_state_keys)
+            summary_key = _current_view_key(summary)
+            try:
+                summary_id = self._upsert_summary(summary, summary_key=summary_key)
+                alert_state_id = self._upsert_alert_state(
+                    alert_state,
+                    summary_key=summary_key,
+                )
+            except Exception:
+                self.summary_rows = summary_rows_snapshot
+                self.alert_state_rows = alert_state_rows_snapshot
+                self._summary_keys = summary_keys_snapshot
+                self._alert_state_keys = alert_state_keys_snapshot
+                raise
         return summary_id, alert_state_id
 
     def upsert_summary(self, summary: RetrospectiveSummary) -> str:
+        with self._lock:
+            return self._upsert_summary(summary, summary_key=_current_view_key(summary))
+
+    def _upsert_summary(
+        self,
+        summary: RetrospectiveSummary,
+        *,
+        summary_key: _CurrentViewKey,
+    ) -> str:
         row = deepcopy(asdict(summary))
         assert_no_forbidden_write(row, path="$.summary")
-        self.summary_rows.append(row)
+        _upsert_row(
+            self.summary_rows,
+            self._summary_keys,
+            row,
+            key=summary_key,
+        )
         return summary.date_window
 
     def upsert_alert_state(self, alert_state: AlertState) -> str:
+        with self._lock:
+            return self._upsert_alert_state(alert_state, summary_key=None)
+
+    def _upsert_alert_state(
+        self,
+        alert_state: AlertState,
+        *,
+        summary_key: _CurrentViewKey | None = None,
+    ) -> str:
         row = deepcopy(asdict(alert_state))
+        if summary_key is not None:
+            row["date_window"] = summary_key[0]
+            row["horizon"] = summary_key[1]
+            row["object_ref"] = summary_key[2]
         assert_no_forbidden_write(row, path="$.alert_state")
-        self.alert_state_rows.append(row)
-        return (
+        alert_state_id = (
             "alert-"
             f"{alert_state.window_start.isoformat()}-"
             f"{alert_state.window_end.isoformat()}"
         )
+        _upsert_row(
+            self.alert_state_rows,
+            self._alert_state_keys,
+            row,
+            key=summary_key or (alert_state_id,),
+        )
+        return alert_state_id
 
 
 def get_default_input_gateway() -> RetrospectiveInputGateway:
     """Return configured retrospective input gateway, or fail closed."""
 
     raise RetrospectiveInputError(
-        "No default retrospective input gateway is configured; "
-        "pass input_gateway=..."
+        "No default retrospective input gateway is configured; pass input_gateway=..."
     )
 
 
@@ -244,20 +289,23 @@ def get_default_current_view_storage() -> RetrospectiveCurrentViewStorage:
     )
 
 
-def _filter_evaluations(
-    evaluations: Sequence[RetrospectiveEvaluation],
-    window: RetroWindow,
-) -> list[RetrospectiveEvaluation]:
-    return [
-        evaluation
-        for evaluation in evaluations
-        if evaluation.horizon == window.horizon
-        and window.start <= evaluation.evaluated_at.date() <= window.end
-        and (
-            window.object_ref is None
-            or evaluation.object_ref == window.object_ref
-        )
-    ]
+def _upsert_row(
+    rows: list[dict[str, object]],
+    keys: list[tuple[object, ...]],
+    row: dict[str, object],
+    *,
+    key: tuple[object, ...],
+) -> None:
+    for index, existing_key in enumerate(keys):
+        if existing_key == key:
+            rows[index] = deepcopy(row)
+            return
+    rows.append(deepcopy(row))
+    keys.append(key)
+
+
+def _current_view_key(summary: RetrospectiveSummary) -> _CurrentViewKey:
+    return (summary.date_window, summary.horizon, summary.object_ref)
 
 
 __all__ = [

@@ -80,6 +80,7 @@ class RetrospectiveSummary:
     l7_hit_rate_rel_trend: float | None
     alert_state: AlertState
     generated_at: datetime
+    object_ref: str | None = None
 
 
 __all__ = [

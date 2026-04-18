@@ -82,6 +82,17 @@ def test_audit_record_allows_null_replay_fields_when_llm_not_called() -> None:
         assert getattr(record, field_name) is None
 
 
+@pytest.mark.parametrize("llm_lineage", [{}, {"called": "false"}, {"called": 1}])
+def test_audit_record_requires_typed_llm_called_flag(
+    llm_lineage: dict[str, object],
+) -> None:
+    payload = _audit_payload()
+    payload["llm_lineage"] = llm_lineage
+
+    with pytest.raises(ValidationError, match="llm_lineage.called"):
+        AuditRecord.model_validate(payload)
+
+
 def test_audit_record_requires_replay_field_names_even_without_llm_call() -> None:
     payload = _audit_payload()
     payload["llm_lineage"] = {"called": False}

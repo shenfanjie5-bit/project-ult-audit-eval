@@ -99,6 +99,26 @@ def test_replay_record_requires_graph_snapshot_ref_key_but_allows_null() -> None
     assert record.graph_snapshot_ref is None
 
 
+@pytest.mark.parametrize(
+    "formal_snapshot_refs",
+    [
+        {"recommendation": 123},
+        {"recommendation": True},
+        {"recommendation": ""},
+        {"": "snapshot://cycle_20260410/recommendation"},
+        ["snapshot://cycle_20260410/recommendation"],
+    ],
+)
+def test_replay_record_requires_string_snapshot_ref_mapping(
+    formal_snapshot_refs: object,
+) -> None:
+    payload = _replay_payload()
+    payload["formal_snapshot_refs"] = formal_snapshot_refs
+
+    with pytest.raises(ValidationError, match="formal_snapshot_refs"):
+        ReplayRecord.model_validate(payload)
+
+
 def test_replay_record_forbids_extra_fields() -> None:
     payload = _replay_payload()
     payload["unexpected"] = True

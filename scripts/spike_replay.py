@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -260,7 +261,16 @@ def reconstruct_replay_view(
         object_ref=object_ref,
         context=_fixture_context(fixture_root, cycle_id),
     )
-    return replay_view.to_dict()
+    return _spike_cli_view(replay_view.to_dict())
+
+
+def _spike_cli_view(replay_view: dict[str, Any]) -> dict[str, Any]:
+    """Return CLI-compatible replay JSON with the legacy graph alias."""
+
+    cli_view = deepcopy(replay_view)
+    if "graph_snapshot" in cli_view and "graph_snapshot_summary" not in cli_view:
+        cli_view["graph_snapshot_summary"] = deepcopy(cli_view["graph_snapshot"])
+    return cli_view
 
 
 def main(argv: list[str] | None = None) -> int:

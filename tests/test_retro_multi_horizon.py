@@ -340,6 +340,64 @@ def test_extract_retrospective_seed_ignores_upstream_non_target_seed() -> None:
     assert seed.expected_risk_score == 2.0
 
 
+def test_extract_retrospective_seed_prefers_parsed_result_over_params() -> None:
+    parsed_seed = {"trend_score": 1.0, "risk_score": 2.0}
+    params_seed = {"trend_score": 9.0, "risk_score": 9.0}
+    record = _audit_record(
+        record_id="audit-cycle_20260401-L7-recommendation",
+        object_ref="recommendation",
+        seed_payload=parsed_seed,
+    ).model_copy(update={"params_snapshot": {"retrospective_seed": params_seed}})
+
+    seed = extract_retrospective_seed(_replay_view_with_records([record]))
+
+    assert seed.expected_trend_score == 1.0
+    assert seed.expected_risk_score == 2.0
+
+
+def test_extract_retrospective_seed_allows_duplicate_identical_target_seeds() -> None:
+    seed_payload = {"trend_score": 1.0, "risk_score": 2.0}
+    replay_view = _replay_view_with_records(
+        [
+            _audit_record(
+                record_id="audit-cycle_20260401-L7-recommendation-a",
+                object_ref="recommendation",
+                seed_payload=seed_payload,
+            ),
+            _audit_record(
+                record_id="audit-cycle_20260401-L7-recommendation-b",
+                object_ref="recommendation",
+                seed_payload=seed_payload,
+            ),
+        ]
+    )
+
+    seed = extract_retrospective_seed(replay_view)
+
+    assert seed.expected_trend_score == 1.0
+    assert seed.expected_risk_score == 2.0
+
+
+def test_extract_retrospective_seed_rejects_conflicting_target_seeds() -> None:
+    replay_view = _replay_view_with_records(
+        [
+            _audit_record(
+                record_id="audit-cycle_20260401-L7-recommendation-a",
+                object_ref="recommendation",
+                seed_payload={"trend_score": 1.0, "risk_score": 2.0},
+            ),
+            _audit_record(
+                record_id="audit-cycle_20260401-L7-recommendation-b",
+                object_ref="recommendation",
+                seed_payload={"trend_score": 1.5, "risk_score": 2.0},
+            ),
+        ]
+    )
+
+    with pytest.raises(RetrospectiveInputError, match="conflicting"):
+        extract_retrospective_seed(replay_view)
+
+
 def test_compute_retrospective_rejects_forbidden_multi_horizon_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

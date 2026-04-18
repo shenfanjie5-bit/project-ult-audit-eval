@@ -26,6 +26,12 @@ class DriftRuleConfig:
     version: str = ALERT_RULES_VERSION
 
     def __post_init__(self) -> None:
+        if not isinstance(self.version, str):
+            raise ValueError("version must be a string")
+        stripped_version = self.version.strip()
+        if not stripped_version:
+            raise ValueError("version must not be empty")
+        object.__setattr__(self, "version", stripped_version)
         if self.warning_drifted_feature_count < 0:
             raise ValueError("warning_drifted_feature_count must be non-negative")
         if self.critical_drifted_feature_count < self.warning_drifted_feature_count:

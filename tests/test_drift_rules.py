@@ -1,3 +1,5 @@
+import pytest
+
 from audit_eval.drift import (
     ALERT_RULES_VERSION,
     DEFAULT_DRIFT_RULE_CONFIG,
@@ -44,6 +46,18 @@ def test_classify_regime_warning_returns_none_without_drift() -> None:
     assert decision.drifted_features == ()
     assert decision.alert_rules_version == ALERT_RULES_VERSION
     assert decision.alert_rules_version == DEFAULT_DRIFT_RULE_CONFIG.version
+
+
+def test_drift_rule_config_strips_version() -> None:
+    config = DriftRuleConfig(version=" drift-regime-v2 ")
+
+    assert config.version == "drift-regime-v2"
+
+
+@pytest.mark.parametrize("version", ["", "   ", 123])
+def test_drift_rule_config_rejects_invalid_version(version: object) -> None:
+    with pytest.raises(ValueError, match="version"):
+        DriftRuleConfig(version=version)  # type: ignore[arg-type]
 
 
 def test_classify_regime_warning_does_not_warn_without_feature_evidence() -> None:
