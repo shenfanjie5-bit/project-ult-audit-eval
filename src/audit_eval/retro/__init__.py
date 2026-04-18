@@ -5,11 +5,25 @@ from audit_eval.retro.alert import (
     AlertState,
     evaluate_cumulative_alert,
 )
+from audit_eval.retro.backfill import (
+    HorizonCoverageReport,
+    RetrospectiveBackfillResult,
+    RetrospectiveJob,
+    check_horizon_coverage,
+    run_backfill,
+)
 from audit_eval.retro.compute import (
     UnsupportedRetrospectiveHorizon,
     calculate_deviation,
     compute_retrospective,
     extract_retrospective_seed,
+)
+from audit_eval.retro.horizon import (
+    HORIZONS,
+    horizon_to_days,
+    is_outcome_mature,
+    require_mature_horizon,
+    resolve_evaluation_date,
 )
 from audit_eval.retro.schema import (
     DeviationResult,
@@ -43,14 +57,18 @@ __all__ = [
     "AlertLevel",
     "AlertState",
     "DeviationResult",
+    "HORIZONS",
+    "HorizonCoverageReport",
     "InMemoryRetrospectiveCurrentViewStorage",
     "InMemoryRetrospectiveEvaluationReader",
     "InMemoryRetrospectiveEvaluationStorage",
     "MarketOutcome",
     "RetroWindow",
+    "RetrospectiveBackfillResult",
     "RetrospectiveCurrentViewStorage",
     "RetrospectiveEvaluationReader",
     "RetrospectiveEvaluationStorage",
+    "RetrospectiveJob",
     "RetrospectiveInputError",
     "RetrospectiveInputGateway",
     "RetrospectiveSeed",
@@ -61,6 +79,7 @@ __all__ = [
     "UnsupportedRetrospectiveHorizon",
     "build_retrospective_summary",
     "calculate_deviation",
+    "check_horizon_coverage",
     "compute_retrospective",
     "evaluate_cumulative_alert",
     "extract_retrospective_seed",
@@ -68,4 +87,9 @@ __all__ = [
     "get_default_evaluation_reader",
     "get_default_evaluation_storage",
     "get_default_input_gateway",
+    "horizon_to_days",
+    "is_outcome_mature",
+    "require_mature_horizon",
+    "resolve_evaluation_date",
+    "run_backfill",
 ]

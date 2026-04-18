@@ -1,11 +1,11 @@
-"""T+1 retrospective evaluation computation."""
+"""Retrospective evaluation computation."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
 from dataclasses import asdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from numbers import Real
 from typing import Any
 
@@ -15,6 +15,10 @@ from audit_eval.audit.query import ReplayQueryContext
 from audit_eval.audit.replay_view import ReplayView
 from audit_eval.contracts.common import RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
+from audit_eval.retro.horizon import (
+    UnsupportedRetrospectiveHorizon,
+    require_mature_horizon,
+)
 from audit_eval.retro.schema import (
     DeviationResult,
     MarketOutcome,
@@ -30,13 +34,6 @@ from audit_eval.retro.storage import (
     get_default_input_gateway,
 )
 
-_SUPPORTED_HORIZON: RetrospectiveHorizon = "T+1"
-_KNOWN_HORIZONS: frozenset[str] = frozenset({"T+1", "T+5", "T+20"})
-
-
-class UnsupportedRetrospectiveHorizon(RetrospectiveInputError):
-    """Raised when a requested retrospective horizon is not implemented."""
-
 
 def compute_retrospective(
     horizon: RetrospectiveHorizon,
@@ -47,10 +44,10 @@ def compute_retrospective(
     storage: RetrospectiveEvaluationStorage | None = None,
     as_of_date: date | None = None,
 ) -> list[RetrospectiveEvaluation]:
-    """Compute and append T+1 retrospective evaluations for one date."""
+    """Compute and append retrospective evaluations for one date/horizon."""
 
-    _require_supported_horizon(horizon)
-    _require_mature_outcome(date_ref=date_ref, as_of_date=as_of_date)
+    effective_as_of_date = as_of_date or date.today()
+    require_mature_horizon(horizon, date_ref, effective_as_of_date)
 
     gateway = input_gateway or get_default_input_gateway()
     evaluation_storage = storage or get_default_evaluation_storage()
@@ -86,16 +83,17 @@ def compute_retrospective(
     except RetrospectiveStorageError:
         raise
     except Exception as exc:
-        raise RetrospectiveStorageError(
-            f"append_evaluations failed: {exc}"
-        ) from exc
+        raise RetrospectiveStorageError(f"append_evaluations failed: {exc}") from exc
     return evaluations
 
 
 def extract_retrospective_seed(replay_view: ReplayView) -> RetrospectiveSeed:
-    """Extract the first valid retrospective seed from canonical audit records."""
+    """Extract the target object's retrospective seed from audit records."""
 
+    seeds: list[RetrospectiveSeed] = []
     for audit_record in replay_view.audit_records:
+        if audit_record.object_ref != replay_view.object_ref:
+            continue
         for source_name, payload in (
             ("parsed_result", audit_record.parsed_result),
             ("params_snapshot", audit_record.params_snapshot),
@@ -127,17 +125,26 @@ def extract_retrospective_seed(replay_view: ReplayView) -> RetrospectiveSeed:
                 raise RetrospectiveInputError(
                     "retrospective_seed.baseline_vs_llm_breakdown must be an object"
                 )
-            return RetrospectiveSeed(
-                cycle_id=replay_view.cycle_id,
-                object_ref=replay_view.object_ref,
-                expected_trend_score=trend_score,
-                expected_risk_score=risk_score,
-                baseline_vs_llm_breakdown=dict(breakdown),
+            seeds.append(
+                RetrospectiveSeed(
+                    cycle_id=replay_view.cycle_id,
+                    object_ref=replay_view.object_ref,
+                    expected_trend_score=trend_score,
+                    expected_risk_score=risk_score,
+                    baseline_vs_llm_breakdown=dict(breakdown),
+                )
             )
 
+    if len(seeds) == 1:
+        return seeds[0]
+    if len(seeds) > 1:
+        raise RetrospectiveInputError(
+            "ReplayView.audit_records contained multiple retrospective_seed values "
+            f"for object_ref={replay_view.object_ref!r}"
+        )
     raise RetrospectiveInputError(
         "ReplayView.audit_records did not contain a retrospective_seed with "
-        "numeric trend_score and risk_score"
+        f"numeric trend_score and risk_score for object_ref={replay_view.object_ref!r}"
     )
 
 
@@ -145,37 +152,14 @@ def calculate_deviation(
     seed: RetrospectiveSeed,
     outcome: MarketOutcome,
 ) -> DeviationResult:
-    """Calculate T+1 absolute trend/risk deviations."""
+    """Calculate absolute trend/risk deviations."""
 
     return DeviationResult(
-        trend_deviation=abs(
-            seed.expected_trend_score - outcome.realized_trend_score
-        ),
+        trend_deviation=abs(seed.expected_trend_score - outcome.realized_trend_score),
         risk_deviation=abs(seed.expected_risk_score - outcome.realized_risk_score),
         hit_rate_rel=outcome.hit_rate_rel,
         baseline_vs_llm_breakdown=dict(outcome.baseline_vs_llm_breakdown),
     )
-
-
-def _require_supported_horizon(horizon: str) -> None:
-    if horizon not in _KNOWN_HORIZONS:
-        raise UnsupportedRetrospectiveHorizon(
-            f"Unsupported retrospective horizon {horizon!r}"
-        )
-    if horizon != _SUPPORTED_HORIZON:
-        raise UnsupportedRetrospectiveHorizon(
-            f"Retrospective horizon {horizon!r} is not implemented yet"
-        )
-
-
-def _require_mature_outcome(date_ref: date, as_of_date: date | None) -> None:
-    effective_as_of_date = as_of_date or date.today()
-    if date_ref + timedelta(days=1) > effective_as_of_date:
-        raise RetrospectiveInputError(
-            "T+1 market outcome is not mature for "
-            f"date_ref={date_ref.isoformat()} as_of_date="
-            f"{effective_as_of_date.isoformat()}"
-        )
 
 
 def _validate_outcome_binding(
