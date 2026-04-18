@@ -94,6 +94,15 @@ def test_backtest_result_rejects_failed_pit_gate() -> None:
         BacktestResult.model_validate(payload)
 
 
+@pytest.mark.parametrize("value", [1, "true", "yes"])
+def test_backtest_result_rejects_coerced_truthy_pit_gate(value: object) -> None:
+    payload = _valid_payload()
+    payload["pit_check_passed"] = value
+
+    with pytest.raises(ValidationError, match="pit_check_passed"):
+        BacktestResult.model_validate(payload)
+
+
 @pytest.mark.parametrize("field_name", ["formal_snapshot_range", "metrics"])
 def test_backtest_result_rejects_forbidden_field_in_json_payloads(
     field_name: str,
