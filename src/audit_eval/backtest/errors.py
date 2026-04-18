@@ -1,4 +1,4 @@
-"""Public error taxonomy for backtest inputs and PIT validation."""
+"""Public error taxonomy for backtest inputs, runners, storage, and PIT gates."""
 
 from __future__ import annotations
 
@@ -7,6 +7,14 @@ from audit_eval.backtest.schema import PITCheckResult
 
 class BacktestInputError(RuntimeError):
     """Raised when backtest input data is unavailable or invalid."""
+
+
+class BacktestRunnerError(RuntimeError):
+    """Raised when a backtest metrics adapter cannot produce valid metrics."""
+
+
+class BacktestStorageError(RuntimeError):
+    """Raised when backtest analytical storage is unavailable or fails."""
 
 
 class PITViolationError(BacktestInputError):
@@ -36,5 +44,7 @@ def _format_pit_violation_message(result: PITCheckResult | None) -> str:
 
 __all__ = [
     "BacktestInputError",
+    "BacktestRunnerError",
+    "BacktestStorageError",
     "PITViolationError",
 ]

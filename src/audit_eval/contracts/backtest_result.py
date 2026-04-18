@@ -31,7 +31,7 @@ class BacktestResult(BaseModel):
     feature_ref: NonBlankString
     formal_snapshot_range: JsonObject
     metrics: JsonObject
-    pit_check_passed: bool
+    pit_check_passed: Annotated[bool, Field(strict=True)]
     created_at: datetime
 
     @field_validator("backtest_id", "job_ref", "feature_ref", mode="after")
