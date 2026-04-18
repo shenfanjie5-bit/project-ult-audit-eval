@@ -74,8 +74,9 @@ def _iter_drift_control_field_paths(
     payload: object,
     path: str = "$",
 ) -> tuple[str, ...]:
+    paths = list(_iter_tabular_schema_field_paths(payload, path))
+
     if isinstance(payload, Mapping):
-        paths: list[str] = []
         for key, value in payload.items():
             field_path = f"{path}.{key}"
             if _is_drift_control_field_name(key):
@@ -87,12 +88,85 @@ def _iter_drift_control_field_paths(
         payload,
         (str, bytes, bytearray),
     ):
-        paths = []
         for index, value in enumerate(payload):
             paths.extend(_iter_drift_control_field_paths(value, f"{path}[{index}]"))
         return tuple(paths)
 
+    return tuple(paths)
+
+
+def _iter_tabular_schema_field_paths(payload: object, path: str) -> tuple[str, ...]:
+    column_names = _extract_tabular_column_names(payload)
+    paths: list[str] = []
+    for index, column_name in enumerate(column_names):
+        if _is_drift_control_column_name(column_name):
+            paths.append(
+                f"{path}.columns[{index}:{_column_name_display(column_name)}]"
+            )
+    return tuple(paths)
+
+
+def _extract_tabular_column_names(payload: object) -> tuple[object, ...]:
+    for attribute_path in (
+        ("column_names",),
+        ("schema", "names"),
+        ("columns",),
+    ):
+        value = _read_attribute_path(payload, attribute_path)
+        if value is None:
+            continue
+        names = _coerce_column_names(value)
+        if names or _is_empty_column_collection(value):
+            return names
     return ()
+
+
+def _read_attribute_path(payload: object, attribute_path: tuple[str, ...]) -> object:
+    value = payload
+    for attribute_name in attribute_path:
+        try:
+            value = getattr(value, attribute_name)
+        except Exception:
+            return None
+        if callable(value):
+            return None
+    return value
+
+
+def _coerce_column_names(value: object) -> tuple[object, ...]:
+    if isinstance(value, (str, bytes, bytearray)):
+        return (value,)
+    try:
+        return tuple(value)  # type: ignore[arg-type]
+    except TypeError:
+        return ()
+
+
+def _is_empty_column_collection(value: object) -> bool:
+    try:
+        return len(value) == 0  # type: ignore[arg-type]
+    except Exception:
+        return False
+
+
+def _is_drift_control_column_name(column_name: object) -> bool:
+    if _is_drift_control_field_name(column_name):
+        return True
+    if isinstance(column_name, Sequence) and not isinstance(
+        column_name,
+        (str, bytes, bytearray),
+    ):
+        return any(_is_drift_control_column_name(part) for part in column_name)
+    return False
+
+
+def _column_name_display(column_name: object) -> str:
+    if isinstance(column_name, Sequence) and not isinstance(
+        column_name,
+        (str, bytes, bytearray),
+    ):
+        return ".".join(str(part) for part in column_name)
+    return str(column_name)
 
 
 def _is_drift_control_field_name(key: object) -> bool:

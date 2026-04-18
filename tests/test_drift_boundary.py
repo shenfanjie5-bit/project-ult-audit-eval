@@ -6,7 +6,10 @@ import pytest
 from pydantic import ValidationError
 
 from audit_eval._boundary import BoundaryViolationError
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import (
+    DriftReport,
+    assert_no_drift_control_write,
+)
 from audit_eval.drift import (
     DriftedFeature,
     EvidentlyRunResult,
@@ -137,6 +140,51 @@ def test_runner_rejects_feature_window_boundary_before_runner_or_writes() -> Non
     assert evidently_runner.calls == []
     assert writer.rows == []
     assert storage.rows == []
+
+
+@pytest.mark.parametrize(
+    "column_name",
+    ["feature_weight_multiplier", "online_control"],
+)
+def test_runner_rejects_dataframe_control_columns_before_runner_or_writes(
+    column_name: str,
+) -> None:
+    pd = pytest.importorskip("pandas")
+    gateway = InMemoryDriftInputGateway(
+        {
+            "reference": pd.DataFrame({"spread": [1.0], column_name: [1.2]}),
+            "target": pd.DataFrame({"spread": [2.0]}),
+        }
+    )
+    evidently_runner = StaticEvidentlyRunner(_result_with_payload())
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(BoundaryViolationError, match=column_name):
+        run_drift_report(
+            "reference",
+            "target",
+            input_gateway=gateway,
+            evidently_runner=evidently_runner,
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert evidently_runner.calls == []
+    assert writer.rows == []
+    assert storage.rows == []
+
+
+def test_drift_boundary_rejects_arrow_like_control_schema_name() -> None:
+    class ArrowLikeSchema:
+        names = ("spread", "online_control")
+
+    class ArrowLikeTable:
+        columns = (object(), object())
+        schema = ArrowLikeSchema()
+
+    with pytest.raises(BoundaryViolationError, match="online_control"):
+        assert_no_drift_control_write(ArrowLikeTable(), path="$.reference_data")
 
 
 def test_runner_rejects_evidently_json_boundary_before_writes() -> None:
