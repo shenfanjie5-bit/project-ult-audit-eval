@@ -16,6 +16,7 @@ from audit_eval.retro import (
     InMemoryRetrospectiveEvaluationReader,
     RetroWindow,
     RetrospectiveSummaryError,
+    RetrospectiveStorageError,
     build_retrospective_summary,
 )
 
@@ -154,6 +155,26 @@ def test_summary_empty_window_raises_without_current_view_upsert() -> None:
         build_retrospective_summary(
             RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
             reader=InMemoryRetrospectiveEvaluationReader([]),
+            current_view=current_view,
+            generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        )
+
+    assert current_view.summary_rows == []
+    assert current_view.alert_state_rows == []
+
+
+def test_summary_current_view_write_is_atomic_when_alert_upsert_fails() -> None:
+    class FailingAlertStateStorage(InMemoryRetrospectiveCurrentViewStorage):
+        def upsert_alert_state(self, alert_state: AlertState) -> str:
+            super().upsert_alert_state(alert_state)
+            raise RuntimeError("alert state write failed")
+
+    current_view = FailingAlertStateStorage()
+
+    with pytest.raises(RetrospectiveStorageError, match="upsert current view failed"):
+        build_retrospective_summary(
+            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            reader=InMemoryRetrospectiveEvaluationReader([_single_evaluation()]),
             current_view=current_view,
             generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
         )

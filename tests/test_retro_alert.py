@@ -138,6 +138,30 @@ def test_cumulative_alert_hit_rate_boundary_equal_0_35_is_not_emergency() -> Non
     assert alert.metrics["l7_hit_rate_rel_mean"] == pytest.approx(0.35)
 
 
+def test_cumulative_alert_l7_emergency_uses_latest_breached_window() -> None:
+    history = [
+        _evaluation(day="2026-03-25", alert_score=1.0, hit_rate_rel=0.1),
+        _evaluation(day="2026-03-26", alert_score=1.0, hit_rate_rel=0.1),
+        _evaluation(day="2026-03-27", alert_score=1.0, hit_rate_rel=0.1),
+        _evaluation(day="2026-04-01", alert_score=3.0, hit_rate_rel=0.5),
+        _evaluation(day="2026-04-02", alert_score=3.1, hit_rate_rel=0.5),
+        _evaluation(day="2026-04-03", alert_score=3.2, hit_rate_rel=0.5),
+    ]
+
+    alert = evaluate_cumulative_alert(
+        history,
+        evaluated_at=datetime(2026, 4, 4, tzinfo=timezone.utc),
+    )
+
+    assert alert.level == "CRITICAL"
+    assert (
+        "CONSECUTIVE_3_DAYS_ALERT_SCORE_GE_3_AND_L7_HIT_RATE_REL_LT_0_35"
+        not in alert.reason_codes
+    )
+    assert alert.metrics["l7_hit_rate_rel_mean"] == pytest.approx(0.5)
+    assert alert.metrics["l7_hit_rate_rel_count"] == 3
+
+
 def test_cumulative_alert_uses_daily_max_and_input_order_does_not_matter() -> None:
     history = [
         _evaluation(day="2026-04-03", alert_score=2.2, hit_rate_rel=0.8),

@@ -70,11 +70,12 @@ class RetrospectiveEvaluationReader(Protocol):
 class RetrospectiveCurrentViewStorage(Protocol):
     """Current-view write boundary for summaries and cumulative alerts."""
 
-    def upsert_summary(self, summary: RetrospectiveSummary) -> str:
-        """Upsert a retrospective summary and return its storage id."""
-
-    def upsert_alert_state(self, alert_state: AlertState) -> str:
-        """Upsert a cumulative alert state and return its storage id."""
+    def upsert_summary_and_alert_state(
+        self,
+        summary: RetrospectiveSummary,
+        alert_state: AlertState,
+    ) -> tuple[str, str]:
+        """Atomically upsert summary and alert state, committing both or neither."""
 
 
 class InMemoryRetrospectiveEvaluationStorage:
@@ -124,6 +125,22 @@ class InMemoryRetrospectiveCurrentViewStorage:
     def __init__(self) -> None:
         self.summary_rows: list[dict[str, object]] = []
         self.alert_state_rows: list[dict[str, object]] = []
+
+    def upsert_summary_and_alert_state(
+        self,
+        summary: RetrospectiveSummary,
+        alert_state: AlertState,
+    ) -> tuple[str, str]:
+        summary_rows_snapshot = deepcopy(self.summary_rows)
+        alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
+        try:
+            summary_id = self.upsert_summary(summary)
+            alert_state_id = self.upsert_alert_state(alert_state)
+        except Exception:
+            self.summary_rows = summary_rows_snapshot
+            self.alert_state_rows = alert_state_rows_snapshot
+            raise
+        return summary_id, alert_state_id
 
     def upsert_summary(self, summary: RetrospectiveSummary) -> str:
         row = deepcopy(asdict(summary))

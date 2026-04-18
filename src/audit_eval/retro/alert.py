@@ -68,9 +68,10 @@ def evaluate_cumulative_alert(
     ordered_dates = sorted(daily_scores)
     window_start = ordered_dates[0]
     window_end = ordered_dates[-1]
+    recent_3_dates = _dates_for_recent_days(window_end, days=3)
     recent_3_scores = _scores_for_recent_days(daily_scores, window_end, days=3)
     recent_5_scores = _scores_for_recent_days(daily_scores, window_end, days=5)
-    l7_hit_rates = _l7_hit_rates(t_plus_1_history)
+    l7_hit_rates = _l7_hit_rates(t_plus_1_history, recent_3_dates)
     l7_hit_rate_mean = _mean(l7_hit_rates)
 
     warning_3d_ge2 = _all_at_or_above(recent_3_scores, threshold=2.0)
@@ -143,7 +144,14 @@ def _scores_for_recent_days(
     days: int,
 ) -> tuple[float, ...]:
     return tuple(
-        daily_scores.get(window_end - timedelta(days=offset), float("-inf"))
+        daily_scores.get(day, float("-inf"))
+        for day in _dates_for_recent_days(window_end, days=days)
+    )
+
+
+def _dates_for_recent_days(window_end: date, *, days: int) -> tuple[date, ...]:
+    return tuple(
+        window_end - timedelta(days=offset)
         for offset in reversed(range(days))
     )
 
@@ -152,11 +160,16 @@ def _all_at_or_above(scores: Sequence[float], *, threshold: float) -> bool:
     return bool(scores) and all(score >= threshold for score in scores)
 
 
-def _l7_hit_rates(history: Sequence[RetrospectiveEvaluation]) -> list[float]:
+def _l7_hit_rates(
+    history: Sequence[RetrospectiveEvaluation],
+    included_dates: Sequence[date],
+) -> list[float]:
+    included_date_set = set(included_dates)
     return [
         evaluation.hit_rate_rel
         for evaluation in history
-        if evaluation.baseline_vs_llm_breakdown.get("layer") == "L7"
+        if evaluation.evaluated_at.date() in included_date_set
+        and evaluation.baseline_vs_llm_breakdown.get("layer") == "L7"
         and evaluation.hit_rate_rel is not None
     ]
 

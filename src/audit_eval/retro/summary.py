@@ -81,8 +81,7 @@ def build_retrospective_summary(
     assert_no_forbidden_write(asdict(alert_state), path="$.alert_state")
 
     try:
-        current_view_storage.upsert_summary(summary)
-        current_view_storage.upsert_alert_state(alert_state)
+        current_view_storage.upsert_summary_and_alert_state(summary, alert_state)
     except RetrospectiveStorageError:
         raise
     except Exception as exc:
