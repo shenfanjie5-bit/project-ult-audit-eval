@@ -1,8 +1,9 @@
 PYTHON ?= python3
 PYTHONPATH ?= src
 export PYTHONPATH
+export PYTHONDONTWRITEBYTECODE ?= 1
 
-.PHONY: install test lint typecheck ci
+.PHONY: install test lint typecheck bytecode-clean ci
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -16,4 +17,7 @@ lint:
 typecheck:
 	$(PYTHON) -m mypy src tests
 
-ci: lint typecheck test
+bytecode-clean:
+	test -z "$$(find . -path './.venv' -prune -o \( -path '*/__pycache__/*' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+
+ci: lint typecheck test bytecode-clean
