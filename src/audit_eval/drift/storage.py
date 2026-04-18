@@ -7,9 +7,11 @@ from copy import deepcopy
 from numbers import Real
 from typing import Any, Protocol
 
-from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import JsonObject
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import (
+    DriftReport,
+    assert_no_drift_control_write,
+)
 from audit_eval.drift.schema import DriftedFeature, EvidentlyRunResult
 
 
@@ -89,7 +91,7 @@ class InMemoryDriftReportJsonWriter:
         self.calls: list[tuple[str, JsonObject]] = []
 
     def write_report_json(self, report_id: str, payload: JsonObject) -> str:
-        assert_no_forbidden_write(payload, path="$.evidently_json")
+        assert_no_drift_control_write(payload, path="$.evidently_json")
         payload_copy = deepcopy(payload)
         self.calls.append((report_id, payload_copy))
         self.payloads[report_id] = payload_copy
@@ -105,7 +107,7 @@ class InMemoryDriftReportStorage:
 
     def append_drift_report(self, report: DriftReport) -> str:
         row = report.model_dump(mode="json")
-        assert_no_forbidden_write(row, path="$.drift_report")
+        assert_no_drift_control_write(row, path="$.drift_report")
         self.rows.append(deepcopy(row))
         self.reports.append(report)
         return report.report_id

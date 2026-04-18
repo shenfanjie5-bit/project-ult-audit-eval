@@ -297,6 +297,31 @@ def test_run_drift_report_rejects_control_feature_payload_before_writes(
     assert storage.rows == []
 
 
+def test_in_memory_json_writer_rejects_control_fields_when_called_directly() -> None:
+    writer = InMemoryDriftReportJsonWriter()
+
+    with pytest.raises(BoundaryViolationError, match="online_control"):
+        writer.write_report_json(
+            "drift-direct",
+            {"metrics": [{"result": {"online_control": {"gate_action": "pause"}}}]},
+        )
+
+    assert writer.calls == []
+    assert writer.payloads == {}
+
+
+def test_in_memory_storage_rejects_mutated_report_before_append() -> None:
+    report = DriftReport.model_validate(_valid_report_payload())
+    report.drifted_features[0]["details"]["gate_action"] = "pause"
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(BoundaryViolationError, match="gate_action"):
+        storage.append_drift_report(report)
+
+    assert storage.rows == []
+    assert storage.reports == []
+
+
 def test_alert_payload_is_derived_from_structured_drift_rows_only() -> None:
     payload = _valid_report_payload()
     payload["drifted_features"] = [
