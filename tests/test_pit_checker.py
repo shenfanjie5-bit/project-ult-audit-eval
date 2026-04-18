@@ -155,6 +155,35 @@ def test_validate_blocks_snapshot_ref_outside_manifest_bound_range() -> None:
     )
 
 
+def test_validate_does_not_authorize_nested_caller_snapshot_refs() -> None:
+    checker = PointInTimeChecker(
+        InMemoryPointInTimeFeatureGateway(
+            {
+                "feature://momentum/v1": [
+                    _availability(snapshot_ref="snapshot://head/latest")
+                ]
+            }
+        )
+    )
+    forged_snapshot_range = {
+        "manifest_cycle_id": "cycle_20260418",
+        "manifest_snapshot_refs": ["snapshot://features/20260418"],
+        "caller_notes": {"snapshot_refs": ["snapshot://head/latest"]},
+    }
+
+    result = checker.validate("feature://momentum/v1", forged_snapshot_range)
+
+    assert result.passed is False
+    assert any(
+        "$.formal_snapshot_range.caller_notes.snapshot_refs" in violation
+        for violation in result.violations
+    )
+    assert any(
+        "not declared in manifest-bound formal_snapshot_range" in violation
+        for violation in result.violations
+    )
+
+
 def test_validate_fails_closed_when_snapshot_range_has_no_manifest_set() -> None:
     checker = PointInTimeChecker(
         InMemoryPointInTimeFeatureGateway(

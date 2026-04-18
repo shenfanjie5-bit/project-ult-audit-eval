@@ -6,16 +6,17 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import datetime
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, TypeGuard
 
 from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.backtest.errors import BacktestInputError
 from audit_eval.backtest.schema import FeatureAvailability, PITCheckResult
 from audit_eval.contracts.common import JsonObject
 
-_SNAPSHOT_SET_KEYS: frozenset[str] = frozenset(
+_MANIFEST_SNAPSHOT_REFS_KEY = "manifest_snapshot_refs"
+_SNAPSHOT_COLLECTION_KEYS: frozenset[str] = frozenset(
     {
-        "manifest_snapshot_refs",
+        _MANIFEST_SNAPSHOT_REFS_KEY,
         "manifest_snapshot_set",
         "formal_snapshot_refs",
         "snapshot_refs",
@@ -23,9 +24,6 @@ _SNAPSHOT_SET_KEYS: frozenset[str] = frozenset(
         "snapshot_set",
         "snapshots",
     }
-)
-_SNAPSHOT_REF_KEYS: frozenset[str] = frozenset(
-    {"snapshot_ref", "snapshot_id", "ref"}
 )
 
 
@@ -60,7 +58,10 @@ class PointInTimeChecker:
             return PITCheckResult(passed=False, violations=tuple(violations))
 
         assert_no_forbidden_write(snapshot_range, path="$.formal_snapshot_range")
-        manifest_snapshot_refs = _extract_manifest_snapshot_refs(snapshot_range)
+        manifest_snapshot_refs = _extract_manifest_snapshot_refs(
+            snapshot_range,
+            violations,
+        )
         if not manifest_snapshot_refs:
             violations.append(
                 "formal_snapshot_range must declare manifest-bound snapshot refs"
@@ -246,52 +247,97 @@ def _normalize_optional_string(
     return stripped
 
 
-def _extract_manifest_snapshot_refs(snapshot_range: JsonObject) -> frozenset[str]:
+def _extract_manifest_snapshot_refs(
+    snapshot_range: JsonObject,
+    violations: list[str],
+) -> frozenset[str]:
+    for path in _iter_unsupported_snapshot_collection_paths(
+        snapshot_range,
+        path="$.formal_snapshot_range",
+        root=True,
+    ):
+        violations.append(
+            f"{path} is not an authoritative manifest snapshot field; "
+            "use $.formal_snapshot_range.manifest_snapshot_refs"
+        )
+
+    raw_refs = snapshot_range.get(_MANIFEST_SNAPSHOT_REFS_KEY)
+    if raw_refs is None:
+        return frozenset()
+    if not _is_snapshot_ref_sequence(raw_refs):
+        violations.append(
+            "$.formal_snapshot_range.manifest_snapshot_refs must be a "
+            "non-empty list of snapshot ref strings"
+        )
+        return frozenset()
+
     refs: set[str] = set()
-    _collect_manifest_snapshot_refs(snapshot_range, refs)
+    for index, raw_ref in enumerate(raw_refs):
+        if not isinstance(raw_ref, str):
+            violations.append(
+                "$.formal_snapshot_range.manifest_snapshot_refs"
+                f"[{index}] must be a string"
+            )
+            continue
+        stripped = raw_ref.strip()
+        if not stripped:
+            violations.append(
+                "$.formal_snapshot_range.manifest_snapshot_refs"
+                f"[{index}] must not be empty"
+            )
+            continue
+        refs.add(stripped)
     return frozenset(refs)
 
 
-def _collect_manifest_snapshot_refs(value: object, refs: set[str]) -> None:
+def _is_snapshot_ref_sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    )
+
+
+def _iter_unsupported_snapshot_collection_paths(
+    value: object,
+    *,
+    path: str,
+    root: bool = False,
+) -> tuple[str, ...]:
     if isinstance(value, Mapping):
+        paths: list[str] = []
         for key, nested_value in value.items():
-            if isinstance(key, str) and key in _SNAPSHOT_SET_KEYS:
-                _collect_snapshot_ref_values(nested_value, refs)
-                continue
-            _collect_manifest_snapshot_refs(nested_value, refs)
-        return
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for nested_value in value:
-            _collect_manifest_snapshot_refs(nested_value, refs)
+            nested_path = f"{path}.{key}"
+            is_allowed_manifest_field = (
+                root
+                and isinstance(key, str)
+                and key == _MANIFEST_SNAPSHOT_REFS_KEY
+            )
+            if (
+                isinstance(key, str)
+                and key in _SNAPSHOT_COLLECTION_KEYS
+                and not is_allowed_manifest_field
+            ):
+                paths.append(nested_path)
+            paths.extend(
+                _iter_unsupported_snapshot_collection_paths(
+                    nested_value,
+                    path=nested_path,
+                )
+            )
+        return tuple(paths)
 
+    if _is_snapshot_ref_sequence(value):
+        paths = []
+        for index, nested_value in enumerate(value):
+            paths.extend(
+                _iter_unsupported_snapshot_collection_paths(
+                    nested_value,
+                    path=f"{path}[{index}]",
+                )
+            )
+        return tuple(paths)
 
-def _collect_snapshot_ref_values(value: object, refs: set[str]) -> None:
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped:
-            refs.add(stripped)
-        return
-    if isinstance(value, Mapping):
-        direct_ref = _first_direct_snapshot_ref(value)
-        if direct_ref is not None:
-            refs.add(direct_ref)
-            return
-        for nested_value in value.values():
-            _collect_snapshot_ref_values(nested_value, refs)
-        return
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for nested_value in value:
-            _collect_snapshot_ref_values(nested_value, refs)
-
-
-def _first_direct_snapshot_ref(value: Mapping[object, object]) -> str | None:
-    for key in _SNAPSHOT_REF_KEYS:
-        nested_value = value.get(key)
-        if isinstance(nested_value, str):
-            stripped = nested_value.strip()
-            if stripped:
-                return stripped
-    return None
+    return ()
 
 
 __all__ = [
