@@ -9,9 +9,11 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
-from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import JsonObject
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import (
+    DriftReport,
+    assert_no_drift_control_write,
+)
 from audit_eval.drift.rules import (
     DEFAULT_DRIFT_RULE_CONFIG,
     ALERT_RULES_VERSION,
@@ -54,8 +56,8 @@ def run_drift_report(
 
     reference_data = gateway.load_feature_window(reference_ref)
     target_data = gateway.load_feature_window(target_ref)
-    assert_no_forbidden_write(reference_data, path="$.reference_data")
-    assert_no_forbidden_write(target_data, path="$.target_data")
+    assert_no_drift_control_write(reference_data, path="$.reference_data")
+    assert_no_drift_control_write(target_data, path="$.target_data")
 
     result = runner.run(reference_data, target_data)
     evidently_json = _require_json_object(result.evidently_json)
@@ -63,8 +65,8 @@ def run_drift_report(
         _drifted_feature_payload(feature)
         for feature in result.drifted_features
     ]
-    assert_no_forbidden_write(evidently_json, path="$.evidently_json")
-    assert_no_forbidden_write(feature_payloads, path="$.drifted_features")
+    assert_no_drift_control_write(evidently_json, path="$.evidently_json")
+    assert_no_drift_control_write(feature_payloads, path="$.drifted_features")
 
     rule_decision = classify_regime_warning(
         result,

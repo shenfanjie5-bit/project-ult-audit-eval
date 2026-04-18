@@ -19,6 +19,13 @@ from audit_eval.drift import (
 
 
 FORBIDDEN_FIELD = "feature_weight_multiplier"
+FORBIDDEN_CONTROL_FIELDS = (
+    "online_control",
+    "gate_action",
+    "feature_weight",
+    "multiplier",
+    "l3_multiplier",
+)
 
 
 class FailingIfCalledRunner:
@@ -120,6 +127,24 @@ def test_drift_report_rejects_nested_forbidden_field() -> None:
         DriftReport.model_validate(payload)
 
 
+@pytest.mark.parametrize("field_name", FORBIDDEN_CONTROL_FIELDS)
+def test_drift_report_rejects_nested_control_field(field_name: str) -> None:
+    payload = _valid_report_payload()
+    payload["drifted_features"][0]["details"] = {field_name: "pause"}
+
+    with pytest.raises(BoundaryViolationError, match=field_name):
+        DriftReport.model_validate(payload)
+
+
+@pytest.mark.parametrize("field_name", FORBIDDEN_CONTROL_FIELDS)
+def test_drift_report_rejects_feature_level_control_field(field_name: str) -> None:
+    payload = _valid_report_payload()
+    payload["drifted_features"][0][field_name] = "pause"
+
+    with pytest.raises(BoundaryViolationError, match=field_name):
+        DriftReport.model_validate(payload)
+
+
 def test_run_drift_report_rejects_forbidden_input_before_runner_or_writes() -> None:
     gateway = InMemoryDriftInputGateway(
         {
@@ -173,6 +198,36 @@ def test_run_drift_report_rejects_forbidden_evidently_json_before_writes() -> No
     assert storage.rows == []
 
 
+@pytest.mark.parametrize("field_name", FORBIDDEN_CONTROL_FIELDS)
+def test_run_drift_report_rejects_control_evidently_json_before_writes(
+    field_name: str,
+) -> None:
+    gateway = InMemoryDriftInputGateway({"reference": {}, "target": {}})
+    runner = StaticRunner(
+        EvidentlyRunResult(
+            evidently_json={"metrics": [{field_name: {"action": "pause"}}]},
+            drifted_features=(),
+            feature_count=0,
+        )
+    )
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(BoundaryViolationError, match=field_name):
+        run_drift_report(
+            "reference",
+            "target",
+            input_gateway=gateway,
+            evidently_runner=runner,
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert runner.calls == 1
+    assert writer.calls == []
+    assert storage.rows == []
+
+
 def test_run_drift_report_rejects_forbidden_feature_payload_before_writes() -> None:
     gateway = InMemoryDriftInputGateway({"reference": {}, "target": {}})
     feature = DriftedFeature(
@@ -193,6 +248,42 @@ def test_run_drift_report_rejects_forbidden_feature_payload_before_writes() -> N
     storage = InMemoryDriftReportStorage()
 
     with pytest.raises(BoundaryViolationError, match=FORBIDDEN_FIELD):
+        run_drift_report(
+            "reference",
+            "target",
+            input_gateway=gateway,
+            evidently_runner=runner,
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert writer.calls == []
+    assert storage.rows == []
+
+
+@pytest.mark.parametrize("field_name", FORBIDDEN_CONTROL_FIELDS)
+def test_run_drift_report_rejects_control_feature_payload_before_writes(
+    field_name: str,
+) -> None:
+    gateway = InMemoryDriftInputGateway({"reference": {}, "target": {}})
+    feature = DriftedFeature(
+        name="feature_a",
+        score=0.42,
+        threshold=0.30,
+        drifted=True,
+        details={"nested": {field_name: "pause"}},
+    )
+    runner = StaticRunner(
+        EvidentlyRunResult(
+            evidently_json={"metrics": []},
+            drifted_features=(feature,),
+            feature_count=1,
+        )
+    )
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(BoundaryViolationError, match=field_name):
         run_drift_report(
             "reference",
             "target",
