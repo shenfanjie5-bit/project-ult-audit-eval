@@ -134,8 +134,8 @@ class EvidentlyDataDriftRunner:
 
     def _run_modern(self, reference_data: Any, target_data: Any) -> JsonObject:
         try:
-            from evidently import Report
-            from evidently.presets import DataDriftPreset
+            from evidently import Report  # type: ignore[import-untyped]
+            from evidently.presets import DataDriftPreset  # type: ignore[import-untyped]
         except ImportError as exc:
             raise ImportError("modern Evidently API unavailable") from exc
 
@@ -349,6 +349,8 @@ def _derive_drifted(value: float | None, threshold: float, method: str) -> bool:
 
 def _optional_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float, str)):
         return None
     try:
         number = float(value)

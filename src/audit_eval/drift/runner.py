@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from audit_eval._boundary import assert_no_forbidden_write
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import DriftedFeaturesPayload, DriftReport
 from audit_eval.drift.rules import (
     DEFAULT_DRIFT_RULE_CONFIG,
     DriftRuleConfig,
@@ -67,7 +67,7 @@ def run_drift_report(
         rule_decision.drifted_features,
     )
     assert_no_forbidden_write(
-        drifted_features_payload,
+        drifted_features_payload.model_dump(),
         path="$.drifted_features",
     )
 
@@ -137,8 +137,10 @@ def _normalize_optional_request_ref(field_name: str, value: object) -> str | Non
     return _normalize_required_request_ref(field_name, value)
 
 
-def _drifted_features_payload(features: tuple[DriftedFeature, ...]) -> dict[str, Any]:
-    return {"features": [feature.to_payload() for feature in features]}
+def _drifted_features_payload(features: tuple[DriftedFeature, ...]) -> DriftedFeaturesPayload:
+    return DriftedFeaturesPayload.model_validate(
+        {"features": [feature.to_payload() for feature in features]}
+    )
 
 
 def _report_id(

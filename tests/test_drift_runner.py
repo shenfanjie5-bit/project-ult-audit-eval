@@ -49,8 +49,8 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def guarded_socket(
         family: int = socket.AF_INET,
-        *args: object,
-        **kwargs: object,
+        *args: Any,
+        **kwargs: Any,
     ) -> socket.socket:
         if family == socket.AF_UNIX:
             return real_socket(family, *args, **kwargs)
@@ -152,8 +152,8 @@ def test_run_drift_report_rejects_invalid_request_refs_before_adapters(
 
     with pytest.raises(error_type, match=match):
         run_drift_report(
-            reference_ref,
-            target_ref,
+            reference_ref,  # type: ignore[arg-type]
+            target_ref,  # type: ignore[arg-type]
             input_gateway=input_gateway,
             evidently_runner=evidently_runner,
             json_writer=json_writer,

@@ -93,7 +93,7 @@ class DriftReport(BaseModel):
 
         if value is None:
             return value
-        return _strip_non_blank_string(value, field_name=info.field_name)
+        return _strip_non_blank_string(value, field_name=info.field_name or "")
 
     @model_validator(mode="before")
     @classmethod
