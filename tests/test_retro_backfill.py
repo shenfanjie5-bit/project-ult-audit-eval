@@ -401,6 +401,46 @@ def test_run_backfill_rejects_blank_object_ref_before_boundaries() -> None:
     assert storage.rows == []
 
 
+def test_run_backfill_rejects_unmatched_object_ref_before_compute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay_calls: list[tuple[str, str]] = []
+
+    def fake_replay_cycle_object(
+        cycle_id: str, object_ref: str, **_kwargs: Any
+    ) -> ReplayView:
+        replay_calls.append((cycle_id, object_ref))
+        return _replay_view()
+
+    monkeypatch.setattr(
+        "audit_eval.audit.query.replay_cycle_object",
+        fake_replay_cycle_object,
+    )
+    gateway = BackfillInputGateway(
+        targets=[RetrospectiveTarget("cycle_20260401", "risk_model")],
+    )
+    storage = CountingReaderStorage()
+
+    with pytest.raises(RetrospectiveInputError, match="recommendation"):
+        run_backfill(
+            date(2026, 4, 1),
+            horizons=("T+1", "T+5"),
+            object_ref="recommendation",
+            input_gateway=gateway,
+            storage=storage,
+            as_of_date=date(2026, 4, 6),
+        )
+
+    assert replay_calls == []
+    assert gateway.target_calls == [
+        ("T+1", date(2026, 4, 1)),
+        ("T+5", date(2026, 4, 1)),
+    ]
+    assert gateway.outcome_calls == []
+    assert storage.rows == []
+    assert storage.loaded_windows == []
+
+
 def test_check_horizon_coverage_reports_missing_horizons() -> None:
     report = check_horizon_coverage(
         [

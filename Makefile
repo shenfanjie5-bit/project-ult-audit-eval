@@ -24,6 +24,6 @@ bytecode-clean:
 	test -z "$$(find . -path './.venv' -prune -o \( -path '*/__pycache__/*' -o -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
 
 backtest-smoke:
-	$(PYTHON) -m pytest tests/test_alphalens_adapter.py::test_alphalens_adapter_smoke_with_installed_dependency
+	AUDIT_EVAL_REQUIRE_ALPHALENS_SMOKE=1 $(PYTHON) -m pytest tests/test_alphalens_adapter.py::test_alphalens_adapter_smoke_with_installed_dependency
 
 ci: lint typecheck test bytecode-clean

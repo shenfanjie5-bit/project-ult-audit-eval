@@ -94,6 +94,8 @@ class AlphalensAdapter:
                 factor_data,
                 period=period,
             )
+        except BacktestRunnerError:
+            raise
         except Exception as exc:
             raise BacktestRunnerError("Alphalens metrics computation failed") from exc
 
@@ -182,15 +184,16 @@ def _compute_quantile_turnover(
     factor_quantile = factor_data["factor_quantile"]
     for quantile in quantiles:
         try:
-            turnover[str(quantile)] = _mean_numeric(
-                performance.quantile_turnover(
-                    factor_quantile,
-                    quantile=quantile,
-                    period=period,
-                )
+            quantile_turnover = performance.quantile_turnover(
+                factor_quantile,
+                quantile=quantile,
+                period=period,
             )
-        except Exception:
-            turnover[str(quantile)] = None
+        except Exception as exc:
+            raise BacktestRunnerError(
+                "Alphalens quantile turnover computation failed"
+            ) from exc
+        turnover[str(quantile)] = _mean_numeric(quantile_turnover)
     return turnover
 
 

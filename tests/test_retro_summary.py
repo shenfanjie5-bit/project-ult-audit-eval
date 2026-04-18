@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Barrier
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -376,7 +376,10 @@ def test_summary_current_view_pair_upsert_is_thread_safe_by_window_and_horizon()
     }
     assert set(current_view._summary_keys) == expected_keys
     assert set(current_view._alert_state_keys) == expected_keys
-    assert {row["metrics"]["source"] for row in current_view.alert_state_rows} == {
+    assert {
+        cast(dict[str, object], row["metrics"])["source"]
+        for row in current_view.alert_state_rows
+    } == {
         "one",
         "two",
     }
@@ -460,7 +463,7 @@ def test_summary_current_view_write_is_atomic_when_alert_upsert_fails() -> None:
             self,
             alert_state: AlertState,
             *,
-            summary_key: tuple[str, str] | None = None,
+            summary_key: Any = None,
         ) -> str:
             super()._upsert_alert_state(alert_state, summary_key=summary_key)
             raise RuntimeError("alert state write failed")

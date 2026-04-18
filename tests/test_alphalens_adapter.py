@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import socket
 import types
 import urllib.request
@@ -335,6 +336,73 @@ def test_alphalens_adapter_rejects_failed_numeric_reduction(
         AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
 
 
+def test_alphalens_adapter_rejects_object_valued_turnover_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ObjectTurnoverPerformance(_FakePerformance):
+        @staticmethod
+        def quantile_turnover(  # type: ignore[override]
+            _factor_quantile: object,
+            *,
+            quantile: int,
+            period: int,
+        ) -> object:
+            assert period == 1
+            return _ObjectMetric()
+
+    _patch_alphalens(monkeypatch, _ObjectTurnoverPerformance)
+
+    with pytest.raises(BacktestRunnerError, match="must be numeric"):
+        AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
+
+
+def test_alphalens_adapter_rejects_turnover_reduction_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BadMeanSeries:
+        def dropna(self) -> "_BadMeanSeries":
+            return self
+
+        def mean(self) -> object:
+            raise RuntimeError("cannot reduce")
+
+    class _BadTurnoverPerformance(_FakePerformance):
+        @staticmethod
+        def quantile_turnover(  # type: ignore[override]
+            _factor_quantile: object,
+            *,
+            quantile: int,
+            period: int,
+        ) -> _BadMeanSeries:
+            assert period == 1
+            return _BadMeanSeries()
+
+    _patch_alphalens(monkeypatch, _BadTurnoverPerformance)
+
+    with pytest.raises(BacktestRunnerError, match="numeric metric reduction"):
+        AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
+
+
+def test_alphalens_adapter_rejects_turnover_adapter_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ExplodingTurnoverPerformance(_FakePerformance):
+        @staticmethod
+        def quantile_turnover(
+            _factor_quantile: object,
+            *,
+            quantile: int,
+            period: int,
+        ) -> _FakeSeries:
+            assert period == 1
+            raise RuntimeError(f"turnover failed for quantile {quantile}")
+
+    _patch_alphalens(monkeypatch, _ExplodingTurnoverPerformance)
+
+    with pytest.raises(BacktestRunnerError, match="quantile turnover"):
+        AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
+
+
 def test_alphalens_adapter_rejects_forbidden_metric_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -362,8 +430,12 @@ def test_alphalens_adapter_rejects_malformed_factor_data(
 
 
 def test_alphalens_adapter_smoke_with_installed_dependency() -> None:
-    pytest.importorskip("alphalens")
-    pd = pytest.importorskip("pandas")
+    if os.environ.get("AUDIT_EVAL_REQUIRE_ALPHALENS_SMOKE") == "1":
+        importlib.import_module("alphalens")
+        pd = importlib.import_module("pandas")
+    else:
+        pytest.importorskip("alphalens")
+        pd = pytest.importorskip("pandas")
 
     dates = pd.to_datetime(["2026-04-15", "2026-04-16", "2026-04-17"])
     assets = ["A", "B", "C"]

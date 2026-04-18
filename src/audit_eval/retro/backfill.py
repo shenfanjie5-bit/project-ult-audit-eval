@@ -89,6 +89,11 @@ def run_backfill(
         date_ref,
         object_ref=normalized_object_ref,
     )
+    _require_requested_object_ref_targets(
+        targets_by_horizon,
+        requested_horizons,
+        object_ref=normalized_object_ref,
+    )
     existing_before_by_id = _load_existing_evaluations_by_id(
         evaluation_reader,
         targets_by_horizon,
@@ -298,6 +303,21 @@ def _load_targets_by_horizon(
             )
         targets_by_horizon[horizon] = targets
     return targets_by_horizon
+
+
+def _require_requested_object_ref_targets(
+    targets_by_horizon: dict[RetrospectiveHorizon, list[RetrospectiveTarget]],
+    horizons: Sequence[RetrospectiveHorizon],
+    *,
+    object_ref: str | None,
+) -> None:
+    if object_ref is None:
+        return
+    if any(targets_by_horizon[horizon] for horizon in horizons):
+        return
+    raise RetrospectiveInputError(
+        f"No retrospective targets found for object_ref={object_ref!r}"
+    )
 
 
 def _missing_targets_by_horizon(
