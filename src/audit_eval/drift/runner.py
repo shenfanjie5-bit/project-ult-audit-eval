@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any
 
 from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.drift_report import DriftedFeaturesPayload, DriftReport
