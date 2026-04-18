@@ -134,8 +134,8 @@ class EvidentlyDataDriftRunner:
 
     def _run_modern(self, reference_data: Any, target_data: Any) -> JsonObject:
         try:
-            from evidently import Report  # type: ignore[import-untyped]
-            from evidently.presets import DataDriftPreset  # type: ignore[import-untyped]
+            from evidently import Report  # type: ignore[import-not-found, import-untyped]
+            from evidently.presets import DataDriftPreset  # type: ignore[import-not-found, import-untyped]
         except ImportError as exc:
             raise ImportError("modern Evidently API unavailable") from exc
 
