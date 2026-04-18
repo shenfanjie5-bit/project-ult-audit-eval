@@ -9,9 +9,11 @@ from numbers import Real
 from threading import Lock
 from typing import Any, Protocol
 
-from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import JsonObject
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import (
+    DriftReport,
+    assert_no_drift_control_write,
+)
 from audit_eval.drift.schema import DriftedFeature, EvidentlyRunResult
 
 
@@ -133,12 +135,12 @@ class InMemoryDriftReportJsonWriter:
         self.write_calls = 0
 
     def write_report_json(self, report_id: str, payload: JsonObject) -> str:
-        assert_no_forbidden_write(payload, path="$.evidently_json")
+        assert_no_drift_control_write(payload, path="$.evidently_json")
         row = {
             "report_id": report_id,
             "payload": deepcopy(payload),
         }
-        assert_no_forbidden_write(row, path="$.json_writer")
+        assert_no_drift_control_write(row, path="$.json_writer")
         self.write_calls += 1
         self.rows.append(deepcopy(row))
         return f"{self.ref_prefix}/{report_id}.json"
@@ -153,7 +155,7 @@ class InMemoryDriftReportStorage:
 
     def append_drift_report(self, report: DriftReport) -> str:
         row = report.model_dump(mode="json")
-        assert_no_forbidden_write(row, path="$.drift_report")
+        assert_no_drift_control_write(row, path="$.drift_report")
         validated = DriftReport.model_validate(deepcopy(row))
         stored_row = validated.model_dump(mode="json")
         with self._lock:

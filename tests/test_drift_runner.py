@@ -150,6 +150,44 @@ def test_run_drift_report_uses_json_ref_returned_by_writer() -> None:
     assert storage.append_calls == 1
 
 
+def test_run_drift_report_does_not_persist_feature_metadata() -> None:
+    gateway = InMemoryDriftInputGateway({"reference": [], "target": []})
+    result = EvidentlyRunResult(
+        report_json={"metrics": []},
+        drifted_features=(
+            DriftedFeature(
+                name="spread",
+                score=0.82,
+                statistic=0.31,
+                threshold=0.05,
+                drifted=True,
+                metadata={"source": "evidently"},
+            ),
+        ),
+        total_feature_count=5,
+    )
+
+    report = run_drift_report(
+        "reference",
+        "target",
+        input_gateway=gateway,
+        evidently_runner=StaticEvidentlyRunner(result),
+        json_writer=ReturningWriter("catalog://report.json"),
+        storage=CountingStorage(),
+        created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert report.drifted_features["features"] == [
+        {
+            "name": "spread",
+            "score": 0.82,
+            "statistic": 0.31,
+            "threshold": 0.05,
+            "drifted": True,
+        }
+    ]
+
+
 def test_run_drift_report_default_boundaries_fail_closed() -> None:
     with pytest.raises(DriftInputError, match="pass input_gateway"):
         run_drift_report("reference", "target")

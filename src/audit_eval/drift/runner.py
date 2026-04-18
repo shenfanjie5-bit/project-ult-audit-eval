@@ -6,9 +6,11 @@ import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import JsonObject
-from audit_eval.contracts.drift_report import DriftReport
+from audit_eval.contracts.drift_report import (
+    DriftReport,
+    assert_no_drift_control_write,
+)
 from audit_eval.drift.rules import (
     DEFAULT_DRIFT_RULE_CONFIG,
     DriftRuleConfig,
@@ -44,7 +46,7 @@ def run_drift_report(
 ) -> DriftReport:
     """Generate, persist, and return one analytical drift report."""
 
-    assert_no_forbidden_write(
+    assert_no_drift_control_write(
         {
             "reference_ref": reference_ref,
             "target_ref": target_ref,
@@ -61,16 +63,16 @@ def run_drift_report(
     effective_created_at = _normalize_created_at(created_at)
 
     reference_data = gateway.load_feature_window(reference_ref)
-    assert_no_forbidden_write(reference_data, path="$.reference_data")
+    assert_no_drift_control_write(reference_data, path="$.reference_data")
     target_data = gateway.load_feature_window(target_ref)
-    assert_no_forbidden_write(target_data, path="$.target_data")
+    assert_no_drift_control_write(target_data, path="$.target_data")
 
     result = runner.run(reference_data, target_data)
-    assert_no_forbidden_write(result.report_json, path="$.evidently_json")
+    assert_no_drift_control_write(result.report_json, path="$.evidently_json")
 
     decision = classify_regime_warning(result, rules=effective_rules)
     drifted_features_payload = _build_drifted_features_payload(decision)
-    assert_no_forbidden_write(
+    assert_no_drift_control_write(
         drifted_features_payload,
         path="$.drifted_features",
     )
@@ -103,15 +105,18 @@ def build_drift_alert_payload(report: DriftReport) -> DriftAlertPayload:
         drifted_features=_extract_drifted_feature_names(report.drifted_features),
         evidently_json_ref=report.evidently_json_ref,
     )
-    assert_no_forbidden_write(asdict(payload), path="$.drift_alert_payload")
+    assert_no_drift_control_write(asdict(payload), path="$.drift_alert_payload")
     return payload
 
 
 def _build_drifted_features_payload(decision: DriftRuleDecision) -> JsonObject:
     return {
         "features": [
-            _drifted_feature_to_json(feature)
-            for feature in decision.drifted_features
+            _drifted_feature_to_json(
+                feature,
+                path=f"$.drifted_features.features[{index}]",
+            )
+            for index, feature in enumerate(decision.drifted_features)
         ],
         "feature_count": decision.total_feature_count,
         "drifted_feature_count": decision.drifted_feature_count,
@@ -119,17 +124,15 @@ def _build_drifted_features_payload(decision: DriftRuleDecision) -> JsonObject:
     }
 
 
-def _drifted_feature_to_json(feature: DriftedFeature) -> JsonObject:
-    payload: JsonObject = {
+def _drifted_feature_to_json(feature: DriftedFeature, *, path: str) -> JsonObject:
+    assert_no_drift_control_write(feature.metadata, path=f"{path}.metadata")
+    return {
         "name": feature.name,
         "score": feature.score,
         "statistic": feature.statistic,
         "threshold": feature.threshold,
         "drifted": feature.drifted,
     }
-    if feature.metadata:
-        payload["metadata"] = dict(feature.metadata)
-    return payload
 
 
 def _extract_drifted_feature_names(payload: JsonObject) -> tuple[str, ...]:

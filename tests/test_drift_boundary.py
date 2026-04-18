@@ -103,6 +103,16 @@ def test_drift_report_rejects_nested_boundary_field() -> None:
         DriftReport.model_validate(payload)
 
 
+def test_drift_report_rejects_nested_control_surface_field() -> None:
+    payload = _valid_report_payload()
+    payload["drifted_features"]["features"][0]["metadata"] = {
+        "online_control": {"gate_action": "raise_multiplier"}
+    }
+
+    with pytest.raises(BoundaryViolationError, match="online_control"):
+        DriftReport.model_validate(payload)
+
+
 def test_runner_rejects_feature_window_boundary_before_runner_or_writes() -> None:
     gateway = InMemoryDriftInputGateway(
         {
@@ -177,6 +187,32 @@ def test_runner_rejects_drifted_feature_boundary_before_writes() -> None:
     assert storage.rows == []
 
 
+def test_runner_rejects_control_metadata_before_writes() -> None:
+    gateway = InMemoryDriftInputGateway({"reference": [], "target": []})
+    evidently_runner = StaticEvidentlyRunner(
+        _result_with_payload(
+            feature_metadata={
+                "online_control": {"gate_action": "raise_multiplier"}
+            }
+        )
+    )
+    writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(BoundaryViolationError, match="online_control"):
+        run_drift_report(
+            "reference",
+            "target",
+            input_gateway=gateway,
+            evidently_runner=evidently_runner,
+            json_writer=writer,
+            storage=storage,
+        )
+
+    assert writer.rows == []
+    assert storage.rows == []
+
+
 def test_alert_payload_only_contains_structural_warning_fields() -> None:
     report = DriftReport.model_validate(_valid_report_payload())
 
@@ -201,6 +237,18 @@ def test_in_memory_json_writer_rejects_boundary_payload_without_storing() -> Non
         writer.write_report_json(
             "drift-report",
             {"nested": {"feature_weight_multiplier": 1.2}},
+        )
+
+    assert writer.rows == []
+
+
+def test_in_memory_json_writer_rejects_control_payload_without_storing() -> None:
+    writer = InMemoryDriftReportJsonWriter()
+
+    with pytest.raises(BoundaryViolationError, match="online_control"):
+        writer.write_report_json(
+            "drift-report",
+            {"nested": {"online_control": {"gate_action": "raise_multiplier"}}},
         )
 
     assert writer.rows == []
