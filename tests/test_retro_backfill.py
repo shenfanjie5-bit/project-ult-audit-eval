@@ -1,7 +1,9 @@
 import socket
 import urllib.request
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -79,6 +81,7 @@ class CountingReaderStorage(InMemoryRetrospectiveEvaluationStorage):
     def __init__(self) -> None:
         super().__init__()
         self.append_calls = 0
+        self.upsert_calls = 0
         self.loaded_windows: list[RetroWindow] = []
 
     def append_evaluations(
@@ -87,6 +90,13 @@ class CountingReaderStorage(InMemoryRetrospectiveEvaluationStorage):
     ) -> list[str]:
         self.append_calls += 1
         return super().append_evaluations(evaluations)
+
+    def upsert_evaluations_by_id(
+        self,
+        evaluations: Sequence[RetrospectiveEvaluation],
+    ) -> Any:
+        self.upsert_calls += 1
+        return super().upsert_evaluations_by_id(evaluations)
 
     def load_evaluations(
         self,
@@ -240,12 +250,71 @@ def test_run_backfill_writes_all_horizons_and_is_idempotent(
     assert second.written_evaluation_ids == ()
     assert second.skipped_existing_ids == expected_ids
     assert second.coverage.is_complete
-    assert storage.append_calls == 1
+    assert storage.append_calls == 0
+    assert storage.upsert_calls == 2
     assert [row["evaluation_id"] for row in storage.rows] == list(expected_ids)
     assert [row["horizon"] for row in storage.rows] == list(HORIZONS)
-    assert replay_calls == [("cycle_20260401", "recommendation")] * 3
+    assert replay_calls == [("cycle_20260401", "recommendation")] * 6
     assert all(window.start == date.min for window in storage.loaded_windows)
     assert all(window.end == date.max for window in storage.loaded_windows)
+
+
+def test_run_backfill_atomic_upsert_prevents_overlapping_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay_calls: list[tuple[str, str]] = []
+
+    def fake_replay_cycle_object(
+        cycle_id: str, object_ref: str, **_kwargs: Any
+    ) -> ReplayView:
+        replay_calls.append((cycle_id, object_ref))
+        return _replay_view()
+
+    monkeypatch.setattr(
+        "audit_eval.audit.query.replay_cycle_object",
+        fake_replay_cycle_object,
+    )
+    gateway = BackfillInputGateway()
+    storage = CountingReaderStorage()
+    barrier = Barrier(2)
+    original_upsert = storage.upsert_evaluations_by_id
+
+    def synchronized_upsert(evaluations: Sequence[RetrospectiveEvaluation]) -> Any:
+        barrier.wait(timeout=5)
+        return original_upsert(evaluations)
+
+    setattr(storage, "upsert_evaluations_by_id", synchronized_upsert)
+
+    def run_once() -> RetrospectiveBackfillResult:
+        return run_backfill(
+            date(2026, 4, 1),
+            horizons=("T+5",),
+            input_gateway=gateway,
+            storage=storage,
+            as_of_date=date(2026, 4, 6),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: run_once(), range(2)))
+
+    evaluation_id = "retro-cycle_20260401-recommendation-T+5"
+    written_ids = [
+        written_id
+        for result in results
+        for written_id in result.written_evaluation_ids
+    ]
+    skipped_ids = [
+        skipped_id
+        for result in results
+        for skipped_id in result.skipped_existing_ids
+    ]
+
+    assert written_ids == [evaluation_id]
+    assert skipped_ids == [evaluation_id]
+    assert [row["evaluation_id"] for row in storage.rows] == [evaluation_id]
+    assert all(result.coverage.is_complete for result in results)
+    assert storage.upsert_calls == 2
+    assert replay_calls == [("cycle_20260401", "recommendation")] * 2
 
 
 def test_run_backfill_immature_batch_fails_before_partial_write() -> None:
@@ -262,6 +331,7 @@ def test_run_backfill_immature_batch_fails_before_partial_write() -> None:
 
     assert gateway.target_calls == []
     assert storage.append_calls == 0
+    assert storage.upsert_calls == 0
     assert storage.rows == []
     assert storage.loaded_windows == []
 

@@ -17,7 +17,9 @@ from audit_eval.retro.schema import MarketOutcome, RetroWindow, RetrospectiveTar
 from audit_eval.retro.storage import (
     RetrospectiveEvaluationReader,
     RetrospectiveEvaluationStorage,
+    RetrospectiveEvaluationWriteResult,
     RetrospectiveInputGateway,
+    RetrospectiveStorageError,
     get_default_evaluation_reader,
     get_default_evaluation_storage,
     get_default_input_gateway,
@@ -83,30 +85,14 @@ def run_backfill(
         requested_horizons,
         date_ref,
     )
-    existing_evaluations_by_id = _load_existing_evaluations_by_id(
-        evaluation_reader,
-        targets_by_horizon,
-    )
-    missing_targets_by_horizon: dict[
-        RetrospectiveHorizon, list[RetrospectiveTarget]
-    ] = {horizon: [] for horizon in requested_horizons}
-    skipped_existing_ids: list[str] = []
-
-    for horizon in requested_horizons:
-        for target in targets_by_horizon[horizon]:
-            evaluation_id = _evaluation_id(target, horizon)
-            if evaluation_id in existing_evaluations_by_id:
-                skipped_existing_ids.append(evaluation_id)
-            else:
-                missing_targets_by_horizon[horizon].append(target)
 
     collector = _CollectingEvaluationStorage()
     filtered_gateway = _BackfillInputGateway(
         delegate=gateway,
-        targets_by_horizon=missing_targets_by_horizon,
+        targets_by_horizon=targets_by_horizon,
     )
     for horizon in requested_horizons:
-        if not missing_targets_by_horizon[horizon]:
+        if not targets_by_horizon[horizon]:
             continue
         compute_retrospective(
             horizon,
@@ -117,26 +103,25 @@ def run_backfill(
             as_of_date=effective_as_of_date,
         )
 
-    if collector.evaluations:
-        written_evaluation_ids = tuple(
-            evaluation_storage.append_evaluations(collector.evaluations)
-        )
-    else:
-        written_evaluation_ids = ()
+    write_result = _upsert_evaluations_by_id(
+        evaluation_storage,
+        collector.evaluations,
+    )
+    persisted_evaluations_by_id = _load_existing_evaluations_by_id(
+        evaluation_reader,
+        targets_by_horizon,
+    )
 
     object_refs = _object_refs_for_targets(targets_by_horizon, requested_horizons)
     coverage = check_horizon_coverage(
-        [
-            *existing_evaluations_by_id.values(),
-            *collector.evaluations,
-        ],
+        list(persisted_evaluations_by_id.values()),
         expected_horizons=requested_horizons,
         object_refs=object_refs,
     )
     return RetrospectiveBackfillResult(
         job=RetrospectiveJob(date_ref=date_ref, horizons=requested_horizons),
-        written_evaluation_ids=written_evaluation_ids,
-        skipped_existing_ids=tuple(skipped_existing_ids),
+        written_evaluation_ids=write_result.written_evaluation_ids,
+        skipped_existing_ids=write_result.skipped_existing_ids,
         coverage=coverage,
     )
 
@@ -201,6 +186,18 @@ class _CollectingEvaluationStorage:
     ) -> list[str]:
         self.evaluations.extend(evaluations)
         return [evaluation.evaluation_id for evaluation in evaluations]
+
+    def upsert_evaluations_by_id(
+        self,
+        evaluations: Sequence[RetrospectiveEvaluation],
+    ) -> RetrospectiveEvaluationWriteResult:
+        self.evaluations.extend(evaluations)
+        return RetrospectiveEvaluationWriteResult(
+            written_evaluation_ids=tuple(
+                evaluation.evaluation_id for evaluation in evaluations
+            ),
+            skipped_existing_ids=(),
+        )
 
 
 @dataclass(frozen=True)
@@ -285,6 +282,25 @@ def _load_existing_evaluations_by_id(
             if evaluation.evaluation_id in expected_ids:
                 existing.setdefault(evaluation.evaluation_id, evaluation)
     return existing
+
+
+def _upsert_evaluations_by_id(
+    storage: RetrospectiveEvaluationStorage,
+    evaluations: Sequence[RetrospectiveEvaluation],
+) -> RetrospectiveEvaluationWriteResult:
+    if not hasattr(storage, "upsert_evaluations_by_id"):
+        raise RetrospectiveStorageError(
+            "Retrospective backfill requires storage.upsert_evaluations_by_id "
+            "for atomic idempotency"
+        )
+    try:
+        return storage.upsert_evaluations_by_id(evaluations)
+    except RetrospectiveStorageError:
+        raise
+    except Exception as exc:
+        raise RetrospectiveStorageError(
+            f"upsert_evaluations_by_id failed: {exc}"
+        ) from exc
 
 
 def _object_refs_for_targets(

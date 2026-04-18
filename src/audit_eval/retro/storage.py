@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date
+from threading import Lock
 from typing import Protocol
 
 from audit_eval._boundary import assert_no_forbidden_write
@@ -28,6 +29,14 @@ class RetrospectiveInputError(RuntimeError):
     """Raised when retrospective input data is unavailable or invalid."""
 
 
+@dataclass(frozen=True)
+class RetrospectiveEvaluationWriteResult:
+    """Atomic retrospective evaluation write accounting."""
+
+    written_evaluation_ids: tuple[str, ...]
+    skipped_existing_ids: tuple[str, ...]
+
+
 class RetrospectiveInputGateway(Protocol):
     """Input boundary for target discovery and realized market outcomes."""
 
@@ -48,13 +57,19 @@ class RetrospectiveInputGateway(Protocol):
 
 
 class RetrospectiveEvaluationStorage(Protocol):
-    """Append-only analytical storage boundary for retrospective evaluations."""
+    """Analytical storage boundary for retrospective evaluations."""
 
     def append_evaluations(
         self,
         evaluations: Sequence[RetrospectiveEvaluation],
     ) -> list[str]:
         """Append validated retrospective evaluations and return ids."""
+
+    def upsert_evaluations_by_id(
+        self,
+        evaluations: Sequence[RetrospectiveEvaluation],
+    ) -> RetrospectiveEvaluationWriteResult:
+        """Atomically insert missing evaluations by evaluation_id."""
 
 
 class RetrospectiveEvaluationReader(Protocol):
@@ -83,6 +98,7 @@ class InMemoryRetrospectiveEvaluationStorage:
 
     def __init__(self) -> None:
         self.rows: list[dict[str, object]] = []
+        self._lock = Lock()
 
     def append_evaluations(
         self,
@@ -91,15 +107,50 @@ class InMemoryRetrospectiveEvaluationStorage:
         rows = [evaluation.model_dump(mode="json") for evaluation in evaluations]
         for index, row in enumerate(rows):
             assert_no_forbidden_write(row, path=f"$.evaluations[{index}]")
-        self.rows.extend(deepcopy(rows))
+        with self._lock:
+            self.rows.extend(deepcopy(rows))
         return [evaluation.evaluation_id for evaluation in evaluations]
+
+    def upsert_evaluations_by_id(
+        self,
+        evaluations: Sequence[RetrospectiveEvaluation],
+    ) -> RetrospectiveEvaluationWriteResult:
+        rows = [evaluation.model_dump(mode="json") for evaluation in evaluations]
+        for index, row in enumerate(rows):
+            assert_no_forbidden_write(row, path=f"$.evaluations[{index}]")
+
+        written_ids: list[str] = []
+        skipped_ids: list[str] = []
+        rows_to_write: list[dict[str, object]] = []
+        with self._lock:
+            existing_ids = {
+                row["evaluation_id"]
+                for row in self.rows
+                if isinstance(row.get("evaluation_id"), str)
+            }
+            for evaluation, row in zip(evaluations, rows, strict=True):
+                evaluation_id = evaluation.evaluation_id
+                if evaluation_id in existing_ids:
+                    skipped_ids.append(evaluation_id)
+                    continue
+                existing_ids.add(evaluation_id)
+                written_ids.append(evaluation_id)
+                rows_to_write.append(row)
+            self.rows.extend(deepcopy(rows_to_write))
+
+        return RetrospectiveEvaluationWriteResult(
+            written_evaluation_ids=tuple(written_ids),
+            skipped_existing_ids=tuple(skipped_ids),
+        )
 
     def load_evaluations(
         self,
         window: RetroWindow,
     ) -> list[RetrospectiveEvaluation]:
+        with self._lock:
+            rows = deepcopy(self.rows)
         evaluations = [
-            RetrospectiveEvaluation.model_validate(row) for row in self.rows
+            RetrospectiveEvaluation.model_validate(row) for row in rows
         ]
         return _filter_evaluations(evaluations, window)
 
@@ -216,6 +267,7 @@ __all__ = [
     "RetrospectiveCurrentViewStorage",
     "RetrospectiveEvaluationReader",
     "RetrospectiveEvaluationStorage",
+    "RetrospectiveEvaluationWriteResult",
     "RetrospectiveInputError",
     "RetrospectiveInputGateway",
     "RetrospectiveStorageError",
