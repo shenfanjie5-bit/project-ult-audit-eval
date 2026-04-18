@@ -179,33 +179,36 @@ class InMemoryRetrospectiveCurrentViewStorage:
         self.alert_state_rows: list[dict[str, object]] = []
         self._summary_keys: list[tuple[object, ...]] = []
         self._alert_state_keys: list[tuple[object, ...]] = []
+        self._lock = Lock()
 
     def upsert_summary_and_alert_state(
         self,
         summary: RetrospectiveSummary,
         alert_state: AlertState,
     ) -> tuple[str, str]:
-        summary_rows_snapshot = deepcopy(self.summary_rows)
-        alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
-        summary_keys_snapshot = deepcopy(self._summary_keys)
-        alert_state_keys_snapshot = deepcopy(self._alert_state_keys)
-        try:
-            summary_id = self.upsert_summary(summary)
-            self._active_summary_key = (summary.date_window, summary.horizon)
+        with self._lock:
+            summary_rows_snapshot = deepcopy(self.summary_rows)
+            alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
+            summary_keys_snapshot = deepcopy(self._summary_keys)
+            alert_state_keys_snapshot = deepcopy(self._alert_state_keys)
+            summary_key = (summary.date_window, summary.horizon)
             try:
-                alert_state_id = self.upsert_alert_state(alert_state)
-            finally:
-                del self._active_summary_key
-        except Exception:
-            self.summary_rows = summary_rows_snapshot
-            self.alert_state_rows = alert_state_rows_snapshot
-            self._summary_keys = summary_keys_snapshot
-            self._alert_state_keys = alert_state_keys_snapshot
-            raise
+                summary_id = self._upsert_summary(summary)
+                alert_state_id = self._upsert_alert_state(
+                    alert_state,
+                    summary_key=summary_key,
+                )
+            except Exception:
+                self.summary_rows = summary_rows_snapshot
+                self.alert_state_rows = alert_state_rows_snapshot
+                self._summary_keys = summary_keys_snapshot
+                self._alert_state_keys = alert_state_keys_snapshot
+                raise
         return summary_id, alert_state_id
 
     def upsert_summary(self, summary: RetrospectiveSummary) -> str:
-        return self._upsert_summary(summary)
+        with self._lock:
+            return self._upsert_summary(summary)
 
     def _upsert_summary(self, summary: RetrospectiveSummary) -> str:
         row = deepcopy(asdict(summary))
@@ -219,8 +222,8 @@ class InMemoryRetrospectiveCurrentViewStorage:
         return summary.date_window
 
     def upsert_alert_state(self, alert_state: AlertState) -> str:
-        summary_key = getattr(self, "_active_summary_key", None)
-        return self._upsert_alert_state(alert_state, summary_key=summary_key)
+        with self._lock:
+            return self._upsert_alert_state(alert_state, summary_key=None)
 
     def _upsert_alert_state(
         self,

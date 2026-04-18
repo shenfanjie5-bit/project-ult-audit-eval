@@ -2,8 +2,10 @@ import json
 import math
 import socket
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -15,6 +17,7 @@ from audit_eval.retro import (
     InMemoryRetrospectiveCurrentViewStorage,
     InMemoryRetrospectiveEvaluationReader,
     RetroWindow,
+    RetrospectiveSummary,
     RetrospectiveSummaryError,
     RetrospectiveStorageError,
     build_retrospective_summary,
@@ -86,6 +89,36 @@ def _single_evaluation(
         hit_rate_rel=0.8,
         baseline_vs_llm_breakdown=baseline_vs_llm_breakdown or {"layer": "L7"},
         evaluated_at=datetime(2026, 4, 1, 12, tzinfo=timezone.utc),
+    )
+
+
+def _current_view_summary(
+    *,
+    date_window: str,
+    horizon: str,
+    label: str,
+    window_start: date = date(2026, 4, 1),
+) -> RetrospectiveSummary:
+    alert_state = AlertState(
+        level="NONE",
+        reason_codes=(),
+        window_start=window_start,
+        window_end=window_start,
+        evaluated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        metrics={"source": label},
+    )
+    return RetrospectiveSummary(
+        date_window=date_window,
+        window_start=window_start,
+        window_end=window_start,
+        horizon=horizon,  # type: ignore[arg-type]
+        evaluation_count=1,
+        composite_learning_score_mean=1.0,
+        trend=0.0,
+        baseline_vs_llm_breakdown={"source": label},
+        l7_hit_rate_rel_trend=None,
+        alert_state=alert_state,
+        generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
     )
 
 
@@ -241,6 +274,56 @@ def test_summary_current_view_upserts_by_window_and_horizon() -> None:
     )
 
 
+def test_summary_current_view_pair_upsert_is_thread_safe_by_window_and_horizon() -> None:
+    class RacingCurrentViewStorage(InMemoryRetrospectiveCurrentViewStorage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.alert_barrier = Barrier(2)
+
+        def upsert_alert_state(self, alert_state: AlertState) -> str:
+            self.alert_barrier.wait(timeout=5)
+            return super().upsert_alert_state(alert_state)
+
+    current_view = RacingCurrentViewStorage()
+    summaries = [
+        _current_view_summary(
+            date_window="2026-04-01..2026-04-01",
+            horizon="T+1",
+            label="one",
+            window_start=date(2026, 4, 1),
+        ),
+        _current_view_summary(
+            date_window="2026-04-02..2026-04-02",
+            horizon="T+5",
+            label="two",
+            window_start=date(2026, 4, 2),
+        ),
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                current_view.upsert_summary_and_alert_state,
+                summary,
+                summary.alert_state,
+            )
+            for summary in summaries
+        ]
+        for future in futures:
+            future.result(timeout=5)
+
+    expected_keys = {
+        ("2026-04-01..2026-04-01", "T+1"),
+        ("2026-04-02..2026-04-02", "T+5"),
+    }
+    assert set(current_view._summary_keys) == expected_keys
+    assert set(current_view._alert_state_keys) == expected_keys
+    assert {row["metrics"]["source"] for row in current_view.alert_state_rows} == {
+        "one",
+        "two",
+    }
+
+
 def test_reader_and_summary_use_same_business_date_filtering() -> None:
     evaluation = _single_evaluation().model_copy(
         update={"evaluated_at": datetime(2026, 4, 10, tzinfo=timezone.utc)}
@@ -278,8 +361,13 @@ def test_summary_empty_window_raises_without_current_view_upsert() -> None:
 
 def test_summary_current_view_write_is_atomic_when_alert_upsert_fails() -> None:
     class FailingAlertStateStorage(InMemoryRetrospectiveCurrentViewStorage):
-        def upsert_alert_state(self, alert_state: AlertState) -> str:
-            super().upsert_alert_state(alert_state)
+        def _upsert_alert_state(
+            self,
+            alert_state: AlertState,
+            *,
+            summary_key: tuple[str, str] | None = None,
+        ) -> str:
+            super()._upsert_alert_state(alert_state, summary_key=summary_key)
             raise RuntimeError("alert state write failed")
 
     current_view = FailingAlertStateStorage()
