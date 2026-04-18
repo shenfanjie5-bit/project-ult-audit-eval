@@ -13,8 +13,10 @@ from audit_eval.backtest.errors import (
 from audit_eval.backtest.job import BacktestJob
 from audit_eval.backtest.pit_checker import (
     InMemoryPointInTimeFeatureGateway,
+    InMemoryPointInTimeManifestGateway,
     PointInTimeChecker,
     PointInTimeFeatureGateway,
+    PointInTimeManifestGateway,
     get_default_pit_feature_gateway,
 )
 from audit_eval.backtest.schema import (
@@ -43,10 +45,12 @@ __all__ = [
     "FeatureAvailability",
     "InMemoryBacktestResultStorage",
     "InMemoryPointInTimeFeatureGateway",
+    "InMemoryPointInTimeManifestGateway",
     "PITCheckResult",
     "PITViolationError",
     "PointInTimeChecker",
     "PointInTimeFeatureGateway",
+    "PointInTimeManifestGateway",
     "get_default_backtest_result_storage",
     "get_default_pit_feature_gateway",
     "persist_backtest_result",
