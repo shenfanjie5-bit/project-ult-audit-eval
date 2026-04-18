@@ -1,0 +1,247 @@
+import json
+import math
+import socket
+import urllib.request
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from audit_eval._boundary import BoundaryViolationError
+from audit_eval.contracts import RetrospectiveEvaluation
+from audit_eval.retro import (
+    AlertState,
+    InMemoryRetrospectiveCurrentViewStorage,
+    InMemoryRetrospectiveEvaluationReader,
+    RetroWindow,
+    RetrospectiveSummaryError,
+    build_retrospective_summary,
+)
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "retro" / "summary"
+
+
+@pytest.fixture(autouse=True)
+def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_network_call(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Retrospective summary must not call network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_network_call)
+    monkeypatch.setattr(socket, "socket", fail_network_call)
+
+
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _summary_evaluations() -> list[RetrospectiveEvaluation]:
+    return [_evaluation_from_fixture(payload) for payload in _read_json(
+        FIXTURE_ROOT / "summary_evaluations.json"
+    )]
+
+
+def _evaluation_from_fixture(payload: dict[str, Any]) -> RetrospectiveEvaluation:
+    trend_deviation = payload["trend_deviation"]
+    risk_deviation = payload["risk_deviation"]
+    alert_score = RetrospectiveEvaluation.derive_alert_score(
+        trend_deviation,
+        risk_deviation,
+    )
+    return RetrospectiveEvaluation(
+        evaluation_id=payload["evaluation_id"],
+        cycle_id=payload["cycle_id"],
+        object_ref=payload["object_ref"],
+        horizon=payload["horizon"],
+        trend_deviation=trend_deviation,
+        risk_deviation=risk_deviation,
+        alert_score=alert_score,
+        learning_score=RetrospectiveEvaluation.derive_learning_score(
+            trend_deviation,
+            risk_deviation,
+        ),
+        deviation_level=min(4, int(math.floor(alert_score))),
+        hit_rate_rel=payload["hit_rate_rel"],
+        baseline_vs_llm_breakdown=payload["baseline_vs_llm_breakdown"],
+        evaluated_at=datetime.fromisoformat(payload["evaluated_at"]),
+    )
+
+
+def _single_evaluation(
+    *,
+    baseline_vs_llm_breakdown: dict[str, Any] | None = None,
+) -> RetrospectiveEvaluation:
+    return RetrospectiveEvaluation(
+        evaluation_id="retro-cycle_20260401-recommendation-T+1",
+        cycle_id="cycle_20260401",
+        object_ref="recommendation",
+        horizon="T+1",
+        trend_deviation=1.0,
+        risk_deviation=0.0,
+        alert_score=1.0,
+        learning_score=0.6,
+        deviation_level=1,
+        hit_rate_rel=0.8,
+        baseline_vs_llm_breakdown=baseline_vs_llm_breakdown or {"layer": "L7"},
+        evaluated_at=datetime(2026, 4, 1, 12, tzinfo=timezone.utc),
+    )
+
+
+def test_build_retrospective_summary_aggregates_and_upserts_current_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from audit_eval.audit import query as audit_query
+
+    def fail_replay(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("summary must only read analytical evaluations")
+
+    monkeypatch.setattr(audit_query, "replay_cycle_object", fail_replay)
+    window = RetroWindow(date(2026, 4, 1), date(2026, 4, 4))
+    reader = InMemoryRetrospectiveEvaluationReader(_summary_evaluations())
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    summary = build_retrospective_summary(
+        window,
+        reader=reader,
+        current_view=current_view,
+        generated_at=datetime(2026, 4, 5, tzinfo=timezone.utc),
+    )
+
+    assert reader.loaded_windows == [window]
+    assert summary.date_window == "2026-04-01..2026-04-04"
+    assert summary.window_start == date(2026, 4, 1)
+    assert summary.window_end == date(2026, 4, 4)
+    assert summary.horizon == "T+1"
+    assert summary.evaluation_count == 4
+    assert summary.composite_learning_score_mean == pytest.approx(1.8)
+    assert summary.trend == pytest.approx(1.4)
+    assert summary.baseline_vs_llm_breakdown == {
+        "alpha": 4.0,
+        "layer": {"L7": 4},
+        "llm_hit": {"false": 2, "true": 2},
+        "winner": {"baseline": 2, "llm": 2},
+    }
+    assert summary.l7_hit_rate_rel_trend == pytest.approx(-0.4)
+    assert summary.alert_state.level == "WARNING"
+    assert len(current_view.summary_rows) == 1
+    assert len(current_view.alert_state_rows) == 1
+    assert current_view.summary_rows[0]["evaluation_count"] == 4
+    assert current_view.alert_state_rows[0]["level"] == "WARNING"
+
+
+def test_summary_single_record_has_zero_trend_and_no_l7_hit_rate_trend() -> None:
+    window = RetroWindow(date(2026, 4, 1), date(2026, 4, 1))
+    reader = InMemoryRetrospectiveEvaluationReader([_single_evaluation()])
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    summary = build_retrospective_summary(
+        window,
+        reader=reader,
+        current_view=current_view,
+        generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+    )
+
+    assert summary.trend == 0.0
+    assert summary.l7_hit_rate_rel_trend is None
+    assert len(current_view.summary_rows) == 1
+    assert len(current_view.alert_state_rows) == 1
+
+
+def test_summary_empty_window_raises_without_current_view_upsert() -> None:
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    with pytest.raises(RetrospectiveSummaryError, match="no evaluations"):
+        build_retrospective_summary(
+            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            reader=InMemoryRetrospectiveEvaluationReader([]),
+            current_view=current_view,
+            generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        )
+
+    assert current_view.summary_rows == []
+    assert current_view.alert_state_rows == []
+
+
+def test_retro_window_rejects_start_after_end() -> None:
+    with pytest.raises(ValueError, match="start"):
+        RetroWindow(date(2026, 4, 2), date(2026, 4, 1))
+
+
+def test_summary_rejects_forbidden_input_payload_before_upsert() -> None:
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+    evaluation = _single_evaluation(
+        baseline_vs_llm_breakdown={
+            "layer": "L7",
+            "nested": {"feature_weight_multiplier": 1.2},
+        }
+    )
+
+    with pytest.raises(
+        BoundaryViolationError,
+        match=r"\$\.evaluations\[0\]\.baseline_vs_llm_breakdown\.nested"
+        r"\.feature_weight_multiplier",
+    ):
+        build_retrospective_summary(
+            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            reader=InMemoryRetrospectiveEvaluationReader([evaluation]),
+            current_view=current_view,
+            generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        )
+
+    assert current_view.summary_rows == []
+    assert current_view.alert_state_rows == []
+
+
+def test_summary_rejects_forbidden_alert_payload_before_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import audit_eval.retro.summary as summary_module
+
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    def forbidden_alert(
+        _history: object,
+        *,
+        evaluated_at: datetime | None = None,
+    ) -> AlertState:
+        effective_evaluated_at = evaluated_at or datetime(2026, 4, 2)
+        return AlertState(
+            level="NONE",
+            reason_codes=(),
+            window_start=date(2026, 4, 1),
+            window_end=date(2026, 4, 1),
+            evaluated_at=effective_evaluated_at,
+            metrics={"feature_weight_multiplier": 1.2},
+        )
+
+    monkeypatch.setattr(summary_module, "evaluate_cumulative_alert", forbidden_alert)
+
+    with pytest.raises(
+        BoundaryViolationError,
+        match=r"\$\.summary\.alert_state\.metrics\.feature_weight_multiplier",
+    ):
+        summary_module.build_retrospective_summary(
+            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            reader=InMemoryRetrospectiveEvaluationReader([_single_evaluation()]),
+            current_view=current_view,
+            generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        )
+
+    assert current_view.summary_rows == []
+    assert current_view.alert_state_rows == []
+
+
+def test_summary_api_exports_are_available() -> None:
+    from audit_eval.retro import (
+        RetrospectiveCurrentViewStorage,
+        RetrospectiveEvaluationReader,
+        evaluate_cumulative_alert,
+    )
+
+    assert build_retrospective_summary.__name__ == "build_retrospective_summary"
+    assert evaluate_cumulative_alert.__name__ == "evaluate_cumulative_alert"
+    assert RetroWindow.__name__ == "RetroWindow"
+    assert RetrospectiveEvaluationReader.__name__ == "RetrospectiveEvaluationReader"
+    assert RetrospectiveCurrentViewStorage.__name__ == (
+        "RetrospectiveCurrentViewStorage"
+    )

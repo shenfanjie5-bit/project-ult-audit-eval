@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 
 from audit_eval.contracts.common import JsonObject, RetrospectiveHorizon
+from audit_eval.retro.alert import AlertState
 
 
 @dataclass(frozen=True)
@@ -49,9 +51,42 @@ class DeviationResult:
     baseline_vs_llm_breakdown: JsonObject
 
 
+@dataclass(frozen=True)
+class RetroWindow:
+    """Stable retrospective evaluation query boundary."""
+
+    start: date
+    end: date
+    horizon: RetrospectiveHorizon = "T+1"
+    object_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.start > self.end:
+            raise ValueError("RetroWindow.start must be on or before end")
+
+
+@dataclass(frozen=True)
+class RetrospectiveSummary:
+    """Aggregated retrospective current-view summary."""
+
+    date_window: str
+    window_start: date
+    window_end: date
+    horizon: RetrospectiveHorizon
+    evaluation_count: int
+    composite_learning_score_mean: float
+    trend: float
+    baseline_vs_llm_breakdown: JsonObject
+    l7_hit_rate_rel_trend: float | None
+    alert_state: AlertState
+    generated_at: datetime
+
+
 __all__ = [
     "DeviationResult",
     "MarketOutcome",
+    "RetroWindow",
     "RetrospectiveSeed",
+    "RetrospectiveSummary",
     "RetrospectiveTarget",
 ]
