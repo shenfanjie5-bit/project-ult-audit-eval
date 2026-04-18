@@ -97,21 +97,29 @@ def test_build_retrospective_summary_aggregates_and_upserts_current_view(
         raise AssertionError("summary must only read analytical evaluations")
 
     monkeypatch.setattr(audit_query, "replay_cycle_object", fail_replay)
-    window = RetroWindow(date(2026, 4, 1), date(2026, 4, 4))
+    window = "2026-04-01..2026-04-07"
+    expected_window = RetroWindow(
+        date(2026, 4, 1),
+        date(2026, 4, 7),
+        horizon="T+1",
+        object_ref="recommendation",
+    )
     reader = InMemoryRetrospectiveEvaluationReader(_summary_evaluations())
     current_view = InMemoryRetrospectiveCurrentViewStorage()
 
     summary = build_retrospective_summary(
         window,
+        horizon="T+1",
+        object_ref="recommendation",
         reader=reader,
         current_view=current_view,
         generated_at=datetime(2026, 4, 5, tzinfo=timezone.utc),
     )
 
-    assert reader.loaded_windows == [window]
-    assert summary.date_window == "2026-04-01..2026-04-04"
+    assert reader.loaded_windows == [expected_window]
+    assert summary.date_window == "2026-04-01..2026-04-07"
     assert summary.window_start == date(2026, 4, 1)
-    assert summary.window_end == date(2026, 4, 4)
+    assert summary.window_end == date(2026, 4, 7)
     assert summary.horizon == "T+1"
     assert summary.evaluation_count == 4
     assert summary.composite_learning_score_mean == pytest.approx(1.8)
@@ -131,7 +139,7 @@ def test_build_retrospective_summary_aggregates_and_upserts_current_view(
 
 
 def test_summary_single_record_has_zero_trend_and_no_l7_hit_rate_trend() -> None:
-    window = RetroWindow(date(2026, 4, 1), date(2026, 4, 1))
+    window = "2026-04-01..2026-04-01"
     reader = InMemoryRetrospectiveEvaluationReader([_single_evaluation()])
     current_view = InMemoryRetrospectiveCurrentViewStorage()
 
@@ -153,7 +161,7 @@ def test_summary_empty_window_raises_without_current_view_upsert() -> None:
 
     with pytest.raises(RetrospectiveSummaryError, match="no evaluations"):
         build_retrospective_summary(
-            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            "2026-04-01..2026-04-01",
             reader=InMemoryRetrospectiveEvaluationReader([]),
             current_view=current_view,
             generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
@@ -173,7 +181,7 @@ def test_summary_current_view_write_is_atomic_when_alert_upsert_fails() -> None:
 
     with pytest.raises(RetrospectiveStorageError, match="upsert current view failed"):
         build_retrospective_summary(
-            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            "2026-04-01..2026-04-01",
             reader=InMemoryRetrospectiveEvaluationReader([_single_evaluation()]),
             current_view=current_view,
             generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
@@ -186,6 +194,19 @@ def test_summary_current_view_write_is_atomic_when_alert_upsert_fails() -> None:
 def test_retro_window_rejects_start_after_end() -> None:
     with pytest.raises(ValueError, match="start"):
         RetroWindow(date(2026, 4, 2), date(2026, 4, 1))
+
+
+def test_summary_public_api_rejects_invalid_window_format() -> None:
+    with pytest.raises(RetrospectiveSummaryError, match="YYYY-MM-DD"):
+        build_retrospective_summary("20260401..2026-04-01")
+
+
+def test_summary_public_api_rejects_invalid_horizon_and_object_filter() -> None:
+    with pytest.raises(RetrospectiveSummaryError, match="horizon"):
+        build_retrospective_summary("2026-04-01..2026-04-01", horizon="T+2")
+
+    with pytest.raises(RetrospectiveSummaryError, match="object_ref"):
+        build_retrospective_summary("2026-04-01..2026-04-01", object_ref="")
 
 
 def test_summary_rejects_forbidden_input_payload_before_upsert() -> None:
@@ -203,7 +224,7 @@ def test_summary_rejects_forbidden_input_payload_before_upsert() -> None:
         r"\.feature_weight_multiplier",
     ):
         build_retrospective_summary(
-            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            "2026-04-01..2026-04-01",
             reader=InMemoryRetrospectiveEvaluationReader([evaluation]),
             current_view=current_view,
             generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
@@ -242,7 +263,7 @@ def test_summary_rejects_forbidden_alert_payload_before_upsert(
         match=r"\$\.summary\.alert_state\.metrics\.feature_weight_multiplier",
     ):
         summary_module.build_retrospective_summary(
-            RetroWindow(date(2026, 4, 1), date(2026, 4, 1)),
+            "2026-04-01..2026-04-01",
             reader=InMemoryRetrospectiveEvaluationReader([_single_evaluation()]),
             current_view=current_view,
             generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),

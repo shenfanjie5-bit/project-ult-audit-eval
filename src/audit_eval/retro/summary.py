@@ -7,12 +7,12 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 from audit_eval._boundary import assert_no_forbidden_write
-from audit_eval.contracts.common import JsonObject
+from audit_eval.contracts.common import JsonObject, RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.retro.alert import evaluate_cumulative_alert
 from audit_eval.retro.schema import RetroWindow, RetrospectiveSummary
@@ -29,7 +29,35 @@ class RetrospectiveSummaryError(RuntimeError):
     """Raised when retrospective summary construction cannot produce output."""
 
 
+_PUBLIC_WINDOW_SEPARATOR = ".."
+_ALLOWED_HORIZONS: frozenset[str] = frozenset({"T+1", "T+5", "T+20"})
+
+
 def build_retrospective_summary(
+    window: str,
+    *,
+    horizon: RetrospectiveHorizon = "T+1",
+    object_ref: str | None = None,
+    reader: RetrospectiveEvaluationReader | None = None,
+    current_view: RetrospectiveCurrentViewStorage | None = None,
+    generated_at: datetime | None = None,
+) -> RetrospectiveSummary:
+    """Build and upsert a retrospective summary for a public date window."""
+
+    retro_window = _parse_public_window(
+        window,
+        horizon=horizon,
+        object_ref=object_ref,
+    )
+    return _build_retrospective_summary(
+        retro_window,
+        reader=reader,
+        current_view=current_view,
+        generated_at=generated_at,
+    )
+
+
+def _build_retrospective_summary(
     window: RetroWindow,
     *,
     reader: RetrospectiveEvaluationReader | None = None,
@@ -87,6 +115,77 @@ def build_retrospective_summary(
     except Exception as exc:
         raise RetrospectiveStorageError(f"upsert current view failed: {exc}") from exc
     return summary
+
+
+def _parse_public_window(
+    window: str,
+    *,
+    horizon: RetrospectiveHorizon,
+    object_ref: str | None,
+) -> RetroWindow:
+    if not isinstance(window, str):
+        raise RetrospectiveSummaryError(
+            "Retrospective summary window must be a string in "
+            "YYYY-MM-DD..YYYY-MM-DD format"
+        )
+
+    parts = window.split(_PUBLIC_WINDOW_SEPARATOR)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise RetrospectiveSummaryError(
+            "Retrospective summary window must use YYYY-MM-DD..YYYY-MM-DD"
+        )
+
+    start = _parse_public_date(parts[0], label="start")
+    end = _parse_public_date(parts[1], label="end")
+    try:
+        return RetroWindow(
+            start=start,
+            end=end,
+            horizon=_validate_horizon(horizon),
+            object_ref=_validate_object_ref(object_ref),
+        )
+    except ValueError as exc:
+        raise RetrospectiveSummaryError(str(exc)) from exc
+
+
+def _parse_public_date(value: str, *, label: str) -> date:
+    if (
+        len(value) != 10
+        or value[4] != "-"
+        or value[7] != "-"
+        or not value[:4].isdigit()
+        or not value[5:7].isdigit()
+        or not value[8:].isdigit()
+    ):
+        raise RetrospectiveSummaryError(
+            f"Retrospective summary window {label} date must use YYYY-MM-DD"
+        )
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise RetrospectiveSummaryError(
+            f"Retrospective summary window {label} date is invalid: {value!r}"
+        ) from exc
+
+
+def _validate_horizon(horizon: str) -> RetrospectiveHorizon:
+    if horizon not in _ALLOWED_HORIZONS:
+        allowed = ", ".join(sorted(_ALLOWED_HORIZONS))
+        raise RetrospectiveSummaryError(
+            f"Retrospective summary horizon must be one of: {allowed}"
+        )
+    return cast(RetrospectiveHorizon, horizon)
+
+
+def _validate_object_ref(object_ref: str | None) -> str | None:
+    if object_ref is None:
+        return None
+    if not isinstance(object_ref, str) or not object_ref.strip():
+        raise RetrospectiveSummaryError(
+            "Retrospective summary object_ref filter must be a non-empty string"
+        )
+    return object_ref
 
 
 def _date_window(window: RetroWindow) -> str:
