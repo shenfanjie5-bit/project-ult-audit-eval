@@ -7,6 +7,7 @@ from audit_eval.contracts.common import (
     ReplayMode,
     RetrospectiveHorizon,
 )
+from audit_eval.contracts.drift_report import DriftReport
 from audit_eval.contracts.manifest_draft import CyclePublishManifestDraft
 from audit_eval.contracts.replay_record import ReplayRecord
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
@@ -23,6 +24,7 @@ __all__ = [
     "AuditRecordDraft",
     "AuditWriteBundle",
     "CyclePublishManifestDraft",
+    "DriftReport",
     "JsonObject",
     "LayerName",
     "ReplayBundleFields",
