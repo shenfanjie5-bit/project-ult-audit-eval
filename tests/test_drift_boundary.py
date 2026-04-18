@@ -62,6 +62,46 @@ def test_drift_report_accepts_valid_payload() -> None:
     assert report.drifted_features.features[0].name == "spread"
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "report_id",
+        "cycle_id",
+        "baseline_ref",
+        "target_ref",
+        "evidently_json_ref",
+        "alert_rules_version",
+    ],
+)
+def test_drift_report_rejects_whitespace_identifier_refs(
+    field_name: str,
+) -> None:
+    payload = _valid_payload()
+    payload[field_name] = "   "
+
+    with pytest.raises(ValidationError, match=f"{field_name} must not be empty"):
+        DriftReport.model_validate(payload)
+
+
+def test_drift_report_strips_identifier_refs() -> None:
+    payload = _valid_payload()
+    payload["report_id"] = " drift-report-1 "
+    payload["cycle_id"] = "\tcycle_20260418\n"
+    payload["baseline_ref"] = " feature-window://baseline "
+    payload["target_ref"] = " feature-window://target "
+    payload["evidently_json_ref"] = " s3://reports/drift-report-1.json "
+    payload["alert_rules_version"] = " drift-regime-v1 "
+
+    report = DriftReport.model_validate(payload)
+
+    assert report.report_id == "drift-report-1"
+    assert report.cycle_id == "cycle_20260418"
+    assert report.baseline_ref == "feature-window://baseline"
+    assert report.target_ref == "feature-window://target"
+    assert report.evidently_json_ref == "s3://reports/drift-report-1.json"
+    assert report.alert_rules_version == "drift-regime-v1"
+
+
 def test_drift_report_rejects_extra_fields() -> None:
     payload = _valid_payload()
     payload["extra"] = "forbidden"
@@ -148,9 +188,7 @@ def test_run_drift_report_rejects_forbidden_evidently_json_before_writes() -> No
     evidently_runner = InMemoryEvidentlyRunner(
         EvidentlyRunResult(
             evidently_json={"nested": {"feature_weight_multiplier": 1.2}},
-            features=(
-                DriftedFeature("spread", 0.7, None, 0.2, True),
-            ),
+            features=(DriftedFeature("spread", 0.7, None, 0.2, True),),
             total_feature_count=1,
         )
     )

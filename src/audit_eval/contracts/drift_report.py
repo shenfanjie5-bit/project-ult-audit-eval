@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from audit_eval._boundary import assert_no_forbidden_write
+
+NonBlankString = Annotated[str, Field(min_length=1)]
 
 
 class DriftedFeatureEvidence(BaseModel):
@@ -16,18 +25,23 @@ class DriftedFeatureEvidence(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    name: NonBlankString
     score: float | None = None
     statistic: float | None = None
     threshold: float
     drifted: bool
 
+    @field_validator("name", mode="after")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        """Normalize feature names and reject whitespace-only values."""
+
+        return _strip_non_blank_string(value, field_name="drifted feature name")
+
     @model_validator(mode="after")
     def validate_feature_evidence(self) -> Self:
         """Require complete, finite feature drift evidence."""
 
-        if not self.name.strip():
-            raise ValueError("drifted feature name must not be empty")
         if self.score is None and self.statistic is None:
             raise ValueError("drifted feature requires score or statistic")
         for field_name in ("score", "statistic", "threshold"):
@@ -50,15 +64,36 @@ class DriftReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    report_id: str
-    cycle_id: str | None
-    baseline_ref: str
-    target_ref: str
-    evidently_json_ref: str
+    report_id: NonBlankString
+    cycle_id: NonBlankString | None
+    baseline_ref: NonBlankString
+    target_ref: NonBlankString
+    evidently_json_ref: NonBlankString
     drifted_features: DriftedFeaturesPayload
     regime_warning_level: Literal["none", "warning", "critical"]
-    alert_rules_version: str
+    alert_rules_version: NonBlankString
     created_at: datetime
+
+    @field_validator(
+        "report_id",
+        "cycle_id",
+        "baseline_ref",
+        "target_ref",
+        "evidently_json_ref",
+        "alert_rules_version",
+        mode="after",
+    )
+    @classmethod
+    def normalize_non_blank_string(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        """Normalize identifier/ref/version strings and reject whitespace-only values."""
+
+        if value is None:
+            return value
+        return _strip_non_blank_string(value, field_name=info.field_name)
 
     @model_validator(mode="before")
     @classmethod
@@ -89,6 +124,13 @@ class DriftReport(BaseModel):
         )
         assert_no_forbidden_write(self.model_dump(mode="python"))
         return self
+
+
+def _strip_non_blank_string(value: str, *, field_name: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must not be empty")
+    return stripped
 
 
 __all__ = [

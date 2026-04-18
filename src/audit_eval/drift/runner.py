@@ -41,7 +41,11 @@ def run_drift_report(
 ) -> DriftReport:
     """Generate, persist, and return one analytical drift report."""
 
-    _validate_request_refs(reference_ref=reference_ref, target_ref=target_ref)
+    reference_ref, target_ref = _validate_request_refs(
+        reference_ref=reference_ref,
+        target_ref=target_ref,
+    )
+    cycle_id = _normalize_optional_request_ref("cycle_id", cycle_id)
     gateway = input_gateway or get_default_input_gateway()
     runner = evidently_runner or get_default_evidently_runner()
     writer = json_writer or get_default_json_writer()
@@ -107,11 +111,30 @@ def build_drift_alert_payload(report: DriftReport) -> DriftAlertPayload:
     return payload
 
 
-def _validate_request_refs(*, reference_ref: str, target_ref: str) -> None:
-    if not reference_ref:
-        raise ValueError("reference_ref must not be empty")
-    if not target_ref:
-        raise ValueError("target_ref must not be empty")
+def _validate_request_refs(
+    *,
+    reference_ref: object,
+    target_ref: object,
+) -> tuple[str, str]:
+    return (
+        _normalize_required_request_ref("reference_ref", reference_ref),
+        _normalize_required_request_ref("target_ref", target_ref),
+    )
+
+
+def _normalize_required_request_ref(field_name: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{field_name} must not be empty")
+    return stripped
+
+
+def _normalize_optional_request_ref(field_name: str, value: object) -> str | None:
+    if value is None:
+        return None
+    return _normalize_required_request_ref(field_name, value)
 
 
 def _drifted_features_payload(features: tuple[DriftedFeature, ...]) -> dict[str, Any]:

@@ -5,8 +5,10 @@ import urllib.request
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from audit_eval.drift import (
     DriftInputError,
@@ -26,6 +28,16 @@ from audit_eval.drift import (
     get_default_report_storage,
     run_drift_report,
 )
+
+
+class _BlankRefJsonWriter:
+    def __init__(self, returned_ref: str) -> None:
+        self.returned_ref = returned_ref
+        self.write_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def write_report_json(self, report_id: str, payload: dict[str, Any]) -> str:
+        self.write_calls.append((report_id, payload))
+        return self.returned_ref
 
 
 @pytest.fixture(autouse=True)
@@ -112,6 +124,118 @@ def test_run_drift_report_uses_all_boundaries_and_appends_once() -> None:
             }
         ]
     }
+
+
+@pytest.mark.parametrize(
+    ("reference_ref", "target_ref", "error_type", "match"),
+    [
+        ("", "target", ValueError, "reference_ref must not be empty"),
+        ("   ", "target", ValueError, "reference_ref must not be empty"),
+        ("baseline", "", ValueError, "target_ref must not be empty"),
+        ("baseline", " \t ", ValueError, "target_ref must not be empty"),
+        (123, "target", TypeError, "reference_ref must be a string"),
+        ("baseline", object(), TypeError, "target_ref must be a string"),
+    ],
+)
+def test_run_drift_report_rejects_invalid_request_refs_before_adapters(
+    reference_ref: object,
+    target_ref: object,
+    error_type: type[Exception],
+    match: str,
+) -> None:
+    input_gateway = InMemoryDriftInputGateway(
+        {"baseline": {"x": [1]}, "target": {"x": [2]}}
+    )
+    evidently_runner = InMemoryEvidentlyRunner(_runner_result())
+    json_writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(error_type, match=match):
+        run_drift_report(
+            reference_ref,
+            target_ref,
+            input_gateway=input_gateway,
+            evidently_runner=evidently_runner,
+            json_writer=json_writer,
+            storage=storage,
+        )
+
+    assert input_gateway.loaded_refs == []
+    assert evidently_runner.calls == []
+    assert json_writer.write_calls == []
+    assert storage.append_calls == 0
+
+
+def test_run_drift_report_rejects_blank_cycle_id_before_adapters() -> None:
+    input_gateway = InMemoryDriftInputGateway(
+        {"baseline": {"x": [1]}, "target": {"x": [2]}}
+    )
+    evidently_runner = InMemoryEvidentlyRunner(_runner_result())
+    json_writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(ValueError, match="cycle_id must not be empty"):
+        run_drift_report(
+            "baseline",
+            "target",
+            cycle_id="   ",
+            input_gateway=input_gateway,
+            evidently_runner=evidently_runner,
+            json_writer=json_writer,
+            storage=storage,
+        )
+
+    assert input_gateway.loaded_refs == []
+    assert evidently_runner.calls == []
+    assert json_writer.write_calls == []
+    assert storage.append_calls == 0
+
+
+def test_run_drift_report_strips_request_refs_before_loading() -> None:
+    input_gateway = InMemoryDriftInputGateway(
+        {"baseline": {"x": [1]}, "target": {"x": [2]}}
+    )
+    storage = InMemoryDriftReportStorage()
+
+    report = run_drift_report(
+        " baseline ",
+        "\ttarget\n",
+        cycle_id=" cycle_20260418 ",
+        input_gateway=input_gateway,
+        evidently_runner=InMemoryEvidentlyRunner(_runner_result()),
+        json_writer=InMemoryDriftReportJsonWriter(),
+        storage=storage,
+        created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+
+    assert input_gateway.loaded_refs == ["baseline", "target"]
+    assert report.cycle_id == "cycle_20260418"
+    assert report.baseline_ref == "baseline"
+    assert report.target_ref == "target"
+
+
+@pytest.mark.parametrize("returned_ref", ["", "   "])
+def test_run_drift_report_rejects_blank_writer_ref_before_storage(
+    returned_ref: str,
+) -> None:
+    json_writer = _BlankRefJsonWriter(returned_ref)
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(ValidationError, match="evidently_json_ref"):
+        run_drift_report(
+            "baseline",
+            "target",
+            input_gateway=InMemoryDriftInputGateway(
+                {"baseline": {"x": [1]}, "target": {"x": [2]}}
+            ),
+            evidently_runner=InMemoryEvidentlyRunner(_runner_result()),
+            json_writer=json_writer,
+            storage=storage,
+            created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+        )
+
+    assert len(json_writer.write_calls) == 1
+    assert storage.append_calls == 0
 
 
 def test_build_drift_alert_payload_contains_only_structural_warning_fields() -> None:
