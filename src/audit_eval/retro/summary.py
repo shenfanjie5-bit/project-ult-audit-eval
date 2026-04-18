@@ -7,12 +7,12 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from numbers import Real
-from typing import Any
+from typing import Any, cast, get_args
 
 from audit_eval._boundary import assert_no_forbidden_write
-from audit_eval.contracts.common import JsonObject
+from audit_eval.contracts.common import JsonObject, RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.retro.alert import evaluate_cumulative_alert
 from audit_eval.retro.schema import RetroWindow, RetrospectiveSummary
@@ -29,7 +29,36 @@ class RetrospectiveSummaryError(RuntimeError):
     """Raised when retrospective summary construction cannot produce output."""
 
 
+_DATE_WINDOW_SEPARATOR = ".."
+_DATE_WINDOW_FORMAT = "YYYY-MM-DD..YYYY-MM-DD"
+_VALID_HORIZONS = set(get_args(RetrospectiveHorizon))
+
+
 def build_retrospective_summary(
+    window: str,
+    *,
+    horizon: RetrospectiveHorizon = "T+1",
+    object_ref: str | None = None,
+    reader: RetrospectiveEvaluationReader | None = None,
+    current_view: RetrospectiveCurrentViewStorage | None = None,
+    generated_at: datetime | None = None,
+) -> RetrospectiveSummary:
+    """Build and upsert a retrospective summary for a public date window."""
+
+    retro_window = _parse_public_window(
+        window,
+        horizon=horizon,
+        object_ref=object_ref,
+    )
+    return _build_retrospective_summary(
+        retro_window,
+        reader=reader,
+        current_view=current_view,
+        generated_at=generated_at,
+    )
+
+
+def _build_retrospective_summary(
     window: RetroWindow,
     *,
     reader: RetrospectiveEvaluationReader | None = None,
@@ -87,6 +116,50 @@ def build_retrospective_summary(
     except Exception as exc:
         raise RetrospectiveStorageError(f"upsert current view failed: {exc}") from exc
     return summary
+
+
+def _parse_public_window(
+    window: str,
+    *,
+    horizon: RetrospectiveHorizon,
+    object_ref: str | None,
+) -> RetroWindow:
+    if not isinstance(window, str):
+        raise TypeError(f"window must be a string in {_DATE_WINDOW_FORMAT} format")
+    if horizon not in _VALID_HORIZONS:
+        raise ValueError("horizon must be one of T+1, T+5, T+20")
+    if object_ref is not None and not object_ref.strip():
+        raise ValueError("object_ref must be a non-empty string when provided")
+
+    parts = window.split(_DATE_WINDOW_SEPARATOR)
+    if len(parts) != 2:
+        raise ValueError(f"window must use {_DATE_WINDOW_FORMAT} format")
+
+    start_text, end_text = (part.strip() for part in parts)
+    start = _parse_window_date(start_text, field_name="window start")
+    end = _parse_window_date(end_text, field_name="window end")
+    return RetroWindow(
+        start=start,
+        end=end,
+        horizon=cast(RetrospectiveHorizon, horizon),
+        object_ref=object_ref,
+    )
+
+
+def _parse_window_date(value: str, *, field_name: str) -> date:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} must use YYYY-MM-DD date format within "
+            f"{_DATE_WINDOW_FORMAT}"
+        ) from exc
+    if parsed.isoformat() != value:
+        raise ValueError(
+            f"{field_name} must use YYYY-MM-DD date format within "
+            f"{_DATE_WINDOW_FORMAT}"
+        )
+    return parsed
 
 
 def _date_window(window: RetroWindow) -> str:
