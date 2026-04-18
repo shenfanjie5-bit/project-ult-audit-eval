@@ -11,21 +11,25 @@ from audit_eval.backtest import (
     BacktestInputError,
     FeatureAvailability,
     InMemoryPointInTimeFeatureGateway,
+    InMemoryPointInTimeManifestGateway,
     PITCheckResult,
     PITViolationError,
     PointInTimeChecker,
     PointInTimeFeatureGateway,
+    PointInTimeManifestGateway,
     get_default_pit_feature_gateway,
+)
+
+_DEFAULT_MANIFEST_SNAPSHOT_REFS = (
+    "snapshot://features/20260417",
+    "snapshot://features/20260418",
 )
 
 
 def _snapshot_range() -> dict[str, object]:
     return {
         "manifest_cycle_id": "cycle_20260418",
-        "manifest_snapshot_refs": [
-            "snapshot://features/20260417",
-            "snapshot://features/20260418",
-        ],
+        "manifest_snapshot_refs": list(_DEFAULT_MANIFEST_SNAPSHOT_REFS),
     }
 
 
@@ -44,6 +48,16 @@ def _availability(
     )
 
 
+def _manifest_gateway(
+    *snapshot_refs: str,
+    manifest_cycle_id: str = "cycle_20260418",
+) -> InMemoryPointInTimeManifestGateway:
+    refs = snapshot_refs or _DEFAULT_MANIFEST_SNAPSHOT_REFS
+    return InMemoryPointInTimeManifestGateway(
+        snapshot_refs_by_manifest_cycle_id={manifest_cycle_id: list(refs)}
+    )
+
+
 def test_backtest_package_exports_pit_checker() -> None:
     from audit_eval.backtest import PointInTimeChecker as ExportedChecker
 
@@ -52,6 +66,7 @@ def test_backtest_package_exports_pit_checker() -> None:
 
 def test_protocol_export_is_importable() -> None:
     assert PointInTimeFeatureGateway is not None
+    assert PointInTimeManifestGateway is not None
 
 
 def test_validate_passes_for_point_in_time_manifest_bound_features() -> None:
@@ -63,12 +78,142 @@ def test_validate_passes_for_point_in_time_manifest_bound_features() -> None:
             ]
         }
     )
-    checker = PointInTimeChecker(gateway)
+    manifest_gateway = _manifest_gateway()
+    checker = PointInTimeChecker(gateway, manifest_gateway)
 
     result = checker.validate(" feature://momentum/v1 ", _snapshot_range())
 
     assert result == PITCheckResult(passed=True)
+    assert manifest_gateway.load_calls == [("cycle_20260418", None)]
     assert gateway.load_calls == [("feature://momentum/v1", _snapshot_range())]
+
+
+def test_validate_can_load_authority_by_immutable_manifest_ref() -> None:
+    gateway = InMemoryPointInTimeFeatureGateway(
+        {"feature://momentum/v1": [_availability()]}
+    )
+    manifest_gateway = InMemoryPointInTimeManifestGateway(
+        snapshot_refs_by_manifest_ref={
+            "manifest://published/cycle_20260418": [
+                "snapshot://features/20260418"
+            ]
+        }
+    )
+    snapshot_range = {
+        "manifest_ref": "manifest://published/cycle_20260418",
+        "manifest_snapshot_refs": ["snapshot://features/20260418"],
+    }
+
+    result = PointInTimeChecker(gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        snapshot_range,
+    )
+
+    assert result == PITCheckResult(passed=True)
+    assert manifest_gateway.load_calls == [
+        (None, "manifest://published/cycle_20260418")
+    ]
+
+
+def test_validate_accepts_dual_manifest_identifiers_when_metadata_binds_them() -> None:
+    gateway = InMemoryPointInTimeFeatureGateway(
+        {"feature://momentum/v1": [_availability()]}
+    )
+    manifest_ref = "manifest://published/cycle_20260418"
+    manifest_gateway = InMemoryPointInTimeManifestGateway(
+        snapshot_refs_by_manifest_ref={
+            manifest_ref: {
+                "published_cycle_id": "cycle_20260418",
+                "manifest_ref": manifest_ref,
+                "snapshot_refs": ["snapshot://features/20260418"],
+            }
+        }
+    )
+    snapshot_range = {
+        "manifest_cycle_id": "cycle_20260418",
+        "manifest_ref": manifest_ref,
+        "manifest_snapshot_refs": ["snapshot://features/20260418"],
+    }
+
+    result = PointInTimeChecker(gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        snapshot_range,
+    )
+
+    assert result == PITCheckResult(passed=True)
+    assert manifest_gateway.load_calls == [(None, manifest_ref)]
+
+
+def test_validate_rejects_dual_manifest_identifiers_without_binding_metadata() -> None:
+    gateway = InMemoryPointInTimeFeatureGateway(
+        {
+            "feature://momentum/v1": [
+                _availability(snapshot_ref="snapshot://features/cycle_b")
+            ]
+        }
+    )
+    manifest_ref = "manifest://published/cycle_b"
+    manifest_gateway = InMemoryPointInTimeManifestGateway(
+        snapshot_refs_by_manifest_ref={
+            manifest_ref: ["snapshot://features/cycle_b"]
+        }
+    )
+    snapshot_range = {
+        "manifest_cycle_id": "cycle_a",
+        "manifest_ref": manifest_ref,
+        "manifest_snapshot_refs": ["snapshot://features/cycle_b"],
+    }
+
+    result = PointInTimeChecker(gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        snapshot_range,
+    )
+
+    assert result.passed is False
+    assert any(
+        "did not return published_cycle_id metadata" in violation
+        for violation in result.violations
+    )
+    assert manifest_gateway.load_calls == [(None, manifest_ref)]
+    assert gateway.load_calls == []
+
+
+def test_validate_rejects_conflicting_manifest_identifier_metadata() -> None:
+    gateway = InMemoryPointInTimeFeatureGateway(
+        {
+            "feature://momentum/v1": [
+                _availability(snapshot_ref="snapshot://features/cycle_b")
+            ]
+        }
+    )
+    manifest_ref = "manifest://published/cycle_b"
+    manifest_gateway = InMemoryPointInTimeManifestGateway(
+        snapshot_refs_by_manifest_ref={
+            manifest_ref: {
+                "published_cycle_id": "cycle_b",
+                "manifest_ref": manifest_ref,
+                "snapshot_refs": ["snapshot://features/cycle_b"],
+            }
+        }
+    )
+    snapshot_range = {
+        "manifest_cycle_id": "cycle_a",
+        "manifest_ref": manifest_ref,
+        "manifest_snapshot_refs": ["snapshot://features/cycle_b"],
+    }
+
+    result = PointInTimeChecker(gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        snapshot_range,
+    )
+
+    assert result.passed is False
+    assert any(
+        "published_cycle_id 'cycle_b' does not match requested "
+        "manifest_cycle_id 'cycle_a'" in violation
+        for violation in result.violations
+    )
+    assert gateway.load_calls == []
 
 
 def test_validate_fails_closed_without_gateway() -> None:
@@ -78,7 +223,10 @@ def test_validate_fails_closed_without_gateway() -> None:
     )
 
     assert result.passed is False
-    assert result.violations == ("No point-in-time feature gateway configured",)
+    assert result.violations == (
+        "No authoritative PIT manifest gateway configured",
+        "No point-in-time feature gateway configured",
+    )
 
 
 def test_default_gateway_fails_closed_with_backtest_input_error() -> None:
@@ -88,7 +236,8 @@ def test_default_gateway_fails_closed_with_backtest_input_error() -> None:
 
 def test_validate_fails_closed_without_availability_rows() -> None:
     checker = PointInTimeChecker(
-        InMemoryPointInTimeFeatureGateway({"feature://momentum/v1": []})
+        InMemoryPointInTimeFeatureGateway({"feature://momentum/v1": []}),
+        _manifest_gateway(),
     )
 
     result = checker.validate("feature://momentum/v1", _snapshot_range())
@@ -98,7 +247,10 @@ def test_validate_fails_closed_without_availability_rows() -> None:
 
 
 def test_validate_fails_closed_for_gateway_input_error() -> None:
-    checker = PointInTimeChecker(InMemoryPointInTimeFeatureGateway({}))
+    checker = PointInTimeChecker(
+        InMemoryPointInTimeFeatureGateway({}),
+        _manifest_gateway(),
+    )
 
     result = checker.validate("feature://missing/v1", _snapshot_range())
 
@@ -125,7 +277,8 @@ def test_validate_blocks_look_ahead_bias() -> None:
                     )
                 ]
             }
-        )
+        ),
+        _manifest_gateway(),
     )
 
     result = checker.validate("feature://momentum/v1", _snapshot_range())
@@ -143,16 +296,66 @@ def test_validate_blocks_snapshot_ref_outside_manifest_bound_range() -> None:
                     _availability(snapshot_ref="snapshot://head/latest")
                 ]
             }
-        )
+        ),
+        _manifest_gateway(),
     )
 
     result = checker.validate("feature://momentum/v1", _snapshot_range())
 
     assert result.passed is False
     assert any(
-        "not declared in manifest-bound formal_snapshot_range" in violation
+        "not returned by the authoritative PIT manifest gateway" in violation
         for violation in result.violations
     )
+
+
+def test_validate_rejects_caller_supplied_head_ref_without_manifest_authority() -> None:
+    feature_gateway = InMemoryPointInTimeFeatureGateway(
+        {
+            "feature://momentum/v1": [
+                _availability(snapshot_ref="snapshot://head/latest")
+            ]
+        }
+    )
+    manifest_gateway = _manifest_gateway("snapshot://features/20260418")
+    forged_snapshot_range = {
+        "manifest_cycle_id": "cycle_20260418",
+        "manifest_snapshot_refs": ["snapshot://head/latest"],
+    }
+
+    result = PointInTimeChecker(feature_gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        forged_snapshot_range,
+    )
+
+    assert result.passed is False
+    assert any(
+        "$.formal_snapshot_range.manifest_snapshot_refs contains "
+        "'snapshot://head/latest'" in violation
+        for violation in result.violations
+    )
+
+
+def test_validate_accepts_head_ref_only_when_manifest_gateway_returns_it() -> None:
+    feature_gateway = InMemoryPointInTimeFeatureGateway(
+        {
+            "feature://momentum/v1": [
+                _availability(snapshot_ref="snapshot://head/latest")
+            ]
+        }
+    )
+    manifest_gateway = _manifest_gateway("snapshot://head/latest")
+    snapshot_range = {
+        "manifest_cycle_id": "cycle_20260418",
+        "manifest_snapshot_refs": ["snapshot://head/latest"],
+    }
+
+    result = PointInTimeChecker(feature_gateway, manifest_gateway).validate(
+        "feature://momentum/v1",
+        snapshot_range,
+    )
+
+    assert result == PITCheckResult(passed=True)
 
 
 def test_validate_does_not_authorize_nested_caller_snapshot_refs() -> None:
@@ -163,7 +366,8 @@ def test_validate_does_not_authorize_nested_caller_snapshot_refs() -> None:
                     _availability(snapshot_ref="snapshot://head/latest")
                 ]
             }
-        )
+        ),
+        _manifest_gateway("snapshot://features/20260418"),
     )
     forged_snapshot_range = {
         "manifest_cycle_id": "cycle_20260418",
@@ -179,7 +383,7 @@ def test_validate_does_not_authorize_nested_caller_snapshot_refs() -> None:
         for violation in result.violations
     )
     assert any(
-        "not declared in manifest-bound formal_snapshot_range" in violation
+        "not returned by the authoritative PIT manifest gateway" in violation
         for violation in result.violations
     )
 
@@ -188,7 +392,8 @@ def test_validate_fails_closed_when_snapshot_range_has_no_manifest_set() -> None
     checker = PointInTimeChecker(
         InMemoryPointInTimeFeatureGateway(
             {"feature://momentum/v1": [_availability()]}
-        )
+        ),
+        _manifest_gateway(),
     )
 
     result = checker.validate(
@@ -198,7 +403,8 @@ def test_validate_fails_closed_when_snapshot_range_has_no_manifest_set() -> None
 
     assert result.passed is False
     assert result.violations[0] == (
-        "formal_snapshot_range must declare manifest-bound snapshot refs"
+        "formal_snapshot_range must declare manifest_cycle_id or manifest_ref "
+        "for authoritative PIT manifest lookup"
     )
 
 
@@ -218,7 +424,10 @@ def test_validate_fails_closed_for_missing_availability_bindings() -> None:
                 }
             ]
 
-    result = PointInTimeChecker(cast(Any, _MalformedGateway())).validate(
+    result = PointInTimeChecker(
+        cast(Any, _MalformedGateway()),
+        _manifest_gateway(),
+    ).validate(
         "feature://momentum/v1",
         _snapshot_range(),
     )
@@ -269,7 +478,10 @@ def test_validate_rejects_forbidden_field_in_availability_row() -> None:
         BoundaryViolationError,
         match=r"\$\.availability\[0\]\.metadata\.feature_weight_multiplier",
     ):
-        PointInTimeChecker(cast(Any, _ForbiddenGateway())).validate(
+        PointInTimeChecker(
+            cast(Any, _ForbiddenGateway()),
+            _manifest_gateway(),
+        ).validate(
             "feature://momentum/v1",
             _snapshot_range(),
         )
