@@ -149,6 +149,24 @@ def test_drift_report_rejects_malformed_feature_evidence() -> None:
         DriftReport.model_validate(payload)
 
 
+@pytest.mark.parametrize("field_name", ["score", "statistic", "threshold"])
+def test_drift_report_rejects_bool_numeric_evidence(field_name: str) -> None:
+    payload = _valid_payload()
+    payload["drifted_features"]["features"][0][field_name] = True
+
+    with pytest.raises(ValidationError, match="real numbers"):
+        DriftReport.model_validate(payload)
+
+
+@pytest.mark.parametrize("field_name", ["score", "statistic", "threshold"])
+def test_drift_report_rejects_string_numeric_evidence(field_name: str) -> None:
+    payload = _valid_payload()
+    payload["drifted_features"]["features"][0][field_name] = "0.7"
+
+    with pytest.raises(ValidationError, match="real numbers"):
+        DriftReport.model_validate(payload)
+
+
 def test_run_drift_report_rejects_forbidden_input_before_runner_or_writes() -> None:
     input_gateway = InMemoryDriftInputGateway(
         {

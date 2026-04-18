@@ -30,11 +30,17 @@ def persist_backtest_result(
 
     result_storage = storage or get_default_backtest_result_storage()
     try:
-        return result_storage.append_backtest_result(result)
+        persisted_id = result_storage.append_backtest_result(result)
     except BacktestStorageError:
         raise
     except Exception as exc:
         raise BacktestStorageError("Backtest result storage append failed") from exc
+    if persisted_id != result.backtest_id:
+        raise BacktestStorageError(
+            "Backtest result storage returned mismatched backtest_id: "
+            f"{persisted_id!r} != {result.backtest_id!r}"
+        )
+    return persisted_id
 
 
 __all__ = ["persist_backtest_result"]

@@ -38,7 +38,6 @@ class ReplayView:
             "historical_formal_objects": deepcopy(self.historical_formal_objects),
             "graph_snapshot_ref": self.graph_snapshot_ref,
             "graph_snapshot": deepcopy(self.graph_snapshot),
-            "graph_snapshot_summary": deepcopy(self.graph_snapshot),
             "dagster_run_summary": deepcopy(self.dagster_run_summary),
         }
 

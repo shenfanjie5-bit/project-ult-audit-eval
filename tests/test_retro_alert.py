@@ -138,6 +138,67 @@ def test_cumulative_alert_hit_rate_boundary_equal_0_35_is_not_emergency() -> Non
     assert alert.metrics["l7_hit_rate_rel_mean"] == pytest.approx(0.35)
 
 
+def test_cumulative_alert_hit_rate_just_below_0_35_is_emergency() -> None:
+    history = [
+        _evaluation(day="2026-04-01", alert_score=3.0, hit_rate_rel=0.35),
+        _evaluation(day="2026-04-02", alert_score=3.1, hit_rate_rel=0.35),
+        _evaluation(
+            day="2026-04-03",
+            alert_score=3.2,
+            hit_rate_rel=0.349999999999,
+        ),
+    ]
+
+    alert = evaluate_cumulative_alert(
+        history,
+        evaluated_at=datetime(2026, 4, 4, tzinfo=timezone.utc),
+    )
+
+    assert alert.level == "EMERGENCY"
+    assert (
+        "CONSECUTIVE_3_DAYS_ALERT_SCORE_GE_3_AND_L7_HIT_RATE_REL_LT_0_35"
+        in alert.reason_codes
+    )
+
+
+def test_cumulative_alert_uses_cycle_business_date_over_evaluated_at() -> None:
+    history = [
+        _evaluation(
+            day="2026-04-01",
+            alert_score=2.0,
+            hit_rate_rel=0.8,
+            suffix="-1",
+        ).model_copy(
+            update={"evaluated_at": datetime(2026, 4, 10, tzinfo=timezone.utc)}
+        ),
+        _evaluation(
+            day="2026-04-02",
+            alert_score=2.1,
+            hit_rate_rel=0.8,
+            suffix="-2",
+        ).model_copy(
+            update={"evaluated_at": datetime(2026, 4, 10, tzinfo=timezone.utc)}
+        ),
+        _evaluation(
+            day="2026-04-03",
+            alert_score=2.2,
+            hit_rate_rel=0.8,
+            suffix="-3",
+        ).model_copy(
+            update={"evaluated_at": datetime(2026, 4, 10, tzinfo=timezone.utc)}
+        ),
+    ]
+
+    alert = evaluate_cumulative_alert(
+        history,
+        evaluated_at=datetime(2026, 4, 11, tzinfo=timezone.utc),
+    )
+
+    assert alert.level == "WARNING"
+    assert alert.window_start.isoformat() == "2026-04-01"
+    assert alert.window_end.isoformat() == "2026-04-03"
+
+
 def test_cumulative_alert_l7_emergency_uses_latest_breached_window() -> None:
     history = [
         _evaluation(day="2026-03-25", alert_score=1.0, hit_rate_rel=0.1),

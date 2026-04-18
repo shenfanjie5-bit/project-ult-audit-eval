@@ -251,10 +251,10 @@ def test_run_backfill_writes_all_horizons_and_is_idempotent(
     assert second.skipped_existing_ids == expected_ids
     assert second.coverage.is_complete
     assert storage.append_calls == 0
-    assert storage.upsert_calls == 2
+    assert storage.upsert_calls == 1
     assert [row["evaluation_id"] for row in storage.rows] == list(expected_ids)
     assert [row["horizon"] for row in storage.rows] == list(HORIZONS)
-    assert replay_calls == [("cycle_20260401", "recommendation")] * 6
+    assert replay_calls == [("cycle_20260401", "recommendation")] * 3
     assert all(window.start == date.min for window in storage.loaded_windows)
     assert all(window.end == date.max for window in storage.loaded_windows)
 
@@ -334,6 +334,71 @@ def test_run_backfill_immature_batch_fails_before_partial_write() -> None:
     assert storage.upsert_calls == 0
     assert storage.rows == []
     assert storage.loaded_windows == []
+
+
+def test_run_backfill_filters_to_object_ref_before_compute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replay_calls: list[tuple[str, str]] = []
+
+    def fake_replay_cycle_object(
+        cycle_id: str, object_ref: str, **_kwargs: Any
+    ) -> ReplayView:
+        replay_calls.append((cycle_id, object_ref))
+        return _replay_view()
+
+    monkeypatch.setattr(
+        "audit_eval.audit.query.replay_cycle_object",
+        fake_replay_cycle_object,
+    )
+    gateway = BackfillInputGateway(
+        targets=[
+            RetrospectiveTarget("cycle_20260401", "risk_model"),
+            RetrospectiveTarget("cycle_20260401", "recommendation"),
+        ],
+    )
+    storage = CountingReaderStorage()
+
+    result = run_backfill(
+        date(2026, 4, 1),
+        horizons=("T+1",),
+        object_ref=" recommendation ",
+        input_gateway=gateway,
+        storage=storage,
+        as_of_date=date(2026, 4, 2),
+    )
+
+    assert result.job == RetrospectiveJob(
+        date(2026, 4, 1),
+        ("T+1",),
+        "recommendation",
+    )
+    assert result.coverage.object_refs == ("recommendation",)
+    assert replay_calls == [("cycle_20260401", "recommendation")]
+    assert gateway.outcome_calls == [
+        (
+            RetrospectiveTarget("cycle_20260401", "recommendation"),
+            "T+1",
+            date(2026, 4, 1),
+        )
+    ]
+
+
+def test_run_backfill_rejects_blank_object_ref_before_boundaries() -> None:
+    gateway = BackfillInputGateway()
+    storage = CountingReaderStorage()
+
+    with pytest.raises(RetrospectiveInputError, match="object_ref"):
+        run_backfill(
+            date(2026, 4, 1),
+            object_ref=" ",
+            input_gateway=gateway,
+            storage=storage,
+            as_of_date=date(2026, 4, 25),
+        )
+
+    assert gateway.target_calls == []
+    assert storage.rows == []
 
 
 def test_check_horizon_coverage_reports_missing_horizons() -> None:

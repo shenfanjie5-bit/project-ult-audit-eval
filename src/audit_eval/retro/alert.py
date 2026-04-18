@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from math import fsum, isclose
+from decimal import Decimal
 from typing import Literal
 
 from audit_eval.contracts.common import JsonObject
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
+from audit_eval.retro.dates import evaluation_business_date
 
 AlertLevel = Literal["NONE", "WARNING", "CRITICAL", "EMERGENCY"]
 
@@ -130,7 +131,7 @@ def _daily_max_alert_scores(
 ) -> dict[date, float]:
     daily_scores: dict[date, float] = {}
     for evaluation in history:
-        evaluated_day = evaluation.evaluated_at.date()
+        evaluated_day = evaluation_business_date(evaluation)
         current_score = daily_scores.get(evaluated_day)
         if current_score is None or evaluation.alert_score > current_score:
             daily_scores[evaluated_day] = evaluation.alert_score
@@ -168,7 +169,7 @@ def _l7_hit_rates(
     return [
         evaluation.hit_rate_rel
         for evaluation in history
-        if evaluation.evaluated_at.date() in included_date_set
+        if evaluation_business_date(evaluation) in included_date_set
         and evaluation.baseline_vs_llm_breakdown.get("layer") == "L7"
         and evaluation.hit_rate_rel is not None
     ]
@@ -177,16 +178,12 @@ def _l7_hit_rates(
 def _mean(values: Sequence[float]) -> float | None:
     if not values:
         return None
-    return fsum(values) / len(values)
+    total = sum(Decimal(str(value)) for value in values)
+    return float(total / Decimal(len(values)))
 
 
 def _strictly_less_than(value: float, *, threshold: float) -> bool:
-    return value < threshold and not isclose(
-        value,
-        threshold,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    )
+    return Decimal(str(value)) < Decimal(str(threshold))
 
 
 __all__ = [

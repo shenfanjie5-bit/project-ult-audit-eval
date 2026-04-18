@@ -13,6 +13,7 @@ from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
 from audit_eval.retro.alert import AlertState
+from audit_eval.retro.dates import filter_evaluations_for_window
 from audit_eval.retro.schema import (
     MarketOutcome,
     RetroWindow,
@@ -152,7 +153,7 @@ class InMemoryRetrospectiveEvaluationStorage:
         evaluations = [
             RetrospectiveEvaluation.model_validate(row) for row in rows
         ]
-        return _filter_evaluations(evaluations, window)
+        return filter_evaluations_for_window(evaluations, window)
 
 
 class InMemoryRetrospectiveEvaluationReader:
@@ -167,7 +168,7 @@ class InMemoryRetrospectiveEvaluationReader:
         window: RetroWindow,
     ) -> list[RetrospectiveEvaluation]:
         self.loaded_windows.append(window)
-        return _filter_evaluations(self.evaluations, window)
+        return filter_evaluations_for_window(self.evaluations, window)
 
 
 class InMemoryRetrospectiveCurrentViewStorage:
@@ -176,6 +177,8 @@ class InMemoryRetrospectiveCurrentViewStorage:
     def __init__(self) -> None:
         self.summary_rows: list[dict[str, object]] = []
         self.alert_state_rows: list[dict[str, object]] = []
+        self._summary_keys: list[tuple[object, ...]] = []
+        self._alert_state_keys: list[tuple[object, ...]] = []
 
     def upsert_summary_and_alert_state(
         self,
@@ -184,30 +187,61 @@ class InMemoryRetrospectiveCurrentViewStorage:
     ) -> tuple[str, str]:
         summary_rows_snapshot = deepcopy(self.summary_rows)
         alert_state_rows_snapshot = deepcopy(self.alert_state_rows)
+        summary_keys_snapshot = deepcopy(self._summary_keys)
+        alert_state_keys_snapshot = deepcopy(self._alert_state_keys)
         try:
             summary_id = self.upsert_summary(summary)
-            alert_state_id = self.upsert_alert_state(alert_state)
+            self._active_summary_key = (summary.date_window, summary.horizon)
+            try:
+                alert_state_id = self.upsert_alert_state(alert_state)
+            finally:
+                del self._active_summary_key
         except Exception:
             self.summary_rows = summary_rows_snapshot
             self.alert_state_rows = alert_state_rows_snapshot
+            self._summary_keys = summary_keys_snapshot
+            self._alert_state_keys = alert_state_keys_snapshot
             raise
         return summary_id, alert_state_id
 
     def upsert_summary(self, summary: RetrospectiveSummary) -> str:
+        return self._upsert_summary(summary)
+
+    def _upsert_summary(self, summary: RetrospectiveSummary) -> str:
         row = deepcopy(asdict(summary))
         assert_no_forbidden_write(row, path="$.summary")
-        self.summary_rows.append(row)
+        _upsert_row(
+            self.summary_rows,
+            self._summary_keys,
+            row,
+            key=(summary.date_window, summary.horizon),
+        )
         return summary.date_window
 
     def upsert_alert_state(self, alert_state: AlertState) -> str:
+        summary_key = getattr(self, "_active_summary_key", None)
+        return self._upsert_alert_state(alert_state, summary_key=summary_key)
+
+    def _upsert_alert_state(
+        self,
+        alert_state: AlertState,
+        *,
+        summary_key: tuple[str, str] | None = None,
+    ) -> str:
         row = deepcopy(asdict(alert_state))
         assert_no_forbidden_write(row, path="$.alert_state")
-        self.alert_state_rows.append(row)
-        return (
+        alert_state_id = (
             "alert-"
             f"{alert_state.window_start.isoformat()}-"
             f"{alert_state.window_end.isoformat()}"
         )
+        _upsert_row(
+            self.alert_state_rows,
+            self._alert_state_keys,
+            row,
+            key=summary_key or (alert_state_id,),
+        )
+        return alert_state_id
 
 
 def get_default_input_gateway() -> RetrospectiveInputGateway:
@@ -244,20 +278,19 @@ def get_default_current_view_storage() -> RetrospectiveCurrentViewStorage:
     )
 
 
-def _filter_evaluations(
-    evaluations: Sequence[RetrospectiveEvaluation],
-    window: RetroWindow,
-) -> list[RetrospectiveEvaluation]:
-    return [
-        evaluation
-        for evaluation in evaluations
-        if evaluation.horizon == window.horizon
-        and window.start <= evaluation.evaluated_at.date() <= window.end
-        and (
-            window.object_ref is None
-            or evaluation.object_ref == window.object_ref
-        )
-    ]
+def _upsert_row(
+    rows: list[dict[str, object]],
+    keys: list[tuple[object, ...]],
+    row: dict[str, object],
+    *,
+    key: tuple[object, ...],
+) -> None:
+    for index, existing_key in enumerate(keys):
+        if existing_key == key:
+            rows[index] = deepcopy(row)
+            return
+    rows.append(deepcopy(row))
+    keys.append(key)
 
 
 __all__ = [

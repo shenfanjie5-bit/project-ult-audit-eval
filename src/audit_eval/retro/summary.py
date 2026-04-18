@@ -14,6 +14,7 @@ from typing import Any, cast, get_args
 from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.contracts.common import JsonObject, RetrospectiveHorizon
 from audit_eval.contracts.retrospective import RetrospectiveEvaluation
+from audit_eval.retro.dates import filter_evaluations_for_window
 from audit_eval.retro.alert import evaluate_cumulative_alert
 from audit_eval.retro.schema import RetroWindow, RetrospectiveSummary
 from audit_eval.retro.storage import (
@@ -70,7 +71,10 @@ def _build_retrospective_summary(
     evaluation_reader = reader or get_default_evaluation_reader()
     current_view_storage = current_view or get_default_current_view_storage()
     effective_generated_at = generated_at or datetime.now(timezone.utc)
-    evaluations = _filter_window(evaluation_reader.load_evaluations(window), window)
+    evaluations = filter_evaluations_for_window(
+        evaluation_reader.load_evaluations(window),
+        window,
+    )
     for index, evaluation in enumerate(evaluations):
         assert_no_forbidden_write(
             evaluation.model_dump(mode="python"),
@@ -164,22 +168,6 @@ def _parse_window_date(value: str, *, field_name: str) -> date:
 
 def _date_window(window: RetroWindow) -> str:
     return f"{window.start.isoformat()}..{window.end.isoformat()}"
-
-
-def _filter_window(
-    evaluations: Sequence[RetrospectiveEvaluation],
-    window: RetroWindow,
-) -> list[RetrospectiveEvaluation]:
-    return [
-        evaluation
-        for evaluation in evaluations
-        if evaluation.horizon == window.horizon
-        and window.start <= evaluation.evaluated_at.date() <= window.end
-        and (
-            window.object_ref is None
-            or evaluation.object_ref == window.object_ref
-        )
-    ]
 
 
 def _aggregate_breakdown(

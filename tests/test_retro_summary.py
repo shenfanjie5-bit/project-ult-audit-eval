@@ -19,6 +19,7 @@ from audit_eval.retro import (
     RetrospectiveStorageError,
     build_retrospective_summary,
 )
+from audit_eval.retro.dates import filter_evaluations_for_window
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "retro" / "summary"
 
@@ -210,6 +211,54 @@ def test_summary_single_record_has_zero_trend_and_no_l7_hit_rate_trend() -> None
     assert summary.l7_hit_rate_rel_trend is None
     assert len(current_view.summary_rows) == 1
     assert len(current_view.alert_state_rows) == 1
+
+
+def test_summary_current_view_upserts_by_window_and_horizon() -> None:
+    reader = InMemoryRetrospectiveEvaluationReader([_single_evaluation()])
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    first = build_retrospective_summary(
+        "2026-04-01..2026-04-01",
+        reader=reader,
+        current_view=current_view,
+        generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+    )
+    second = build_retrospective_summary(
+        "2026-04-01..2026-04-01",
+        reader=reader,
+        current_view=current_view,
+        generated_at=datetime(2026, 4, 3, tzinfo=timezone.utc),
+    )
+
+    assert first.date_window == second.date_window
+    assert len(current_view.summary_rows) == 1
+    assert len(current_view.alert_state_rows) == 1
+    assert current_view.summary_rows[0]["generated_at"] == datetime(
+        2026,
+        4,
+        3,
+        tzinfo=timezone.utc,
+    )
+
+
+def test_reader_and_summary_use_same_business_date_filtering() -> None:
+    evaluation = _single_evaluation().model_copy(
+        update={"evaluated_at": datetime(2026, 4, 10, tzinfo=timezone.utc)}
+    )
+    window = RetroWindow(date(2026, 4, 1), date(2026, 4, 1))
+    reader = InMemoryRetrospectiveEvaluationReader([evaluation])
+    current_view = InMemoryRetrospectiveCurrentViewStorage()
+
+    loaded = reader.load_evaluations(window)
+    summary = build_retrospective_summary(
+        "2026-04-01..2026-04-01",
+        reader=reader,
+        current_view=current_view,
+        generated_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+    )
+
+    assert filter_evaluations_for_window([evaluation], window) == loaded
+    assert summary.evaluation_count == 1
 
 
 def test_summary_empty_window_raises_without_current_view_upsert() -> None:

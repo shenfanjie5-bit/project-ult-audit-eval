@@ -29,7 +29,12 @@ from audit_eval.contracts.common import JsonObject
 class BacktestMetricsAdapter(Protocol):
     """Boundary for computing backtest metrics for one feature snapshot range."""
 
-    def run(self, feature_ref: str, snapshot_range: JsonObject) -> JsonObject:
+    def run(
+        self,
+        feature_ref: str,
+        snapshot_range: JsonObject,
+        metrics_config: JsonObject,
+    ) -> JsonObject:
         """Return JSON metrics for feature_ref over the supplied snapshot range."""
 
 
@@ -100,6 +105,7 @@ def _run_metrics_adapter(
         raw_metrics = adapter.run(
             job_config.feature_ref,
             deepcopy(job_config.formal_snapshot_range),
+            deepcopy(job_config.metrics_config),
         )
     except BacktestRunnerError:
         raise

@@ -117,6 +117,10 @@ class _FakeSeries:
         return sum(self.values) / len(self.values)
 
 
+class _ObjectMetric:
+    pass
+
+
 class _FakePerformance:
     @staticmethod
     def factor_information_coefficient(_factor_data: object) -> _FakeIC:
@@ -239,6 +243,96 @@ def test_alphalens_adapter_returns_json_metrics(
             "turnover": {"1": 0.15000000000000002, "2": 0.30000000000000004},
         },
     }
+
+
+def test_alphalens_adapter_threads_metrics_config_period(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    periods: list[int] = []
+
+    class _ConfigurablePerformance(_FakePerformance):
+        @staticmethod
+        def factor_rank_autocorrelation(
+            _factor_data: object,
+            *,
+            period: int,
+        ) -> _FakeSeries:
+            periods.append(period)
+            return _FakeSeries([0.2, 0.4])
+
+        @staticmethod
+        def quantile_turnover(
+            _factor_quantile: object,
+            *,
+            quantile: int,
+            period: int,
+        ) -> _FakeSeries:
+            periods.append(period)
+            return _FakeSeries([0.1 * quantile])
+
+    _patch_alphalens(monkeypatch, _ConfigurablePerformance)
+
+    metrics = AlphalensAdapter(_Gateway()).run(
+        "feature://momentum/v1",
+        _snapshot_range(),
+        {"period": 5},
+    )
+
+    assert periods == [5, 5, 5]
+    assert metrics["decay"]["rank_autocorrelation_mean"] == 0.30000000000000004
+
+
+def test_alphalens_adapter_rejects_invalid_metrics_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_alphalens(monkeypatch, _FakePerformance)
+
+    with pytest.raises(BacktestRunnerError, match="metrics_config.period"):
+        AlphalensAdapter(_Gateway()).run(
+            "feature://momentum/v1",
+            _snapshot_range(),
+            {"period": 0},
+        )
+
+
+def test_alphalens_adapter_rejects_object_valued_metric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ObjectMetricPerformance(_FakePerformance):
+        @staticmethod
+        def mean_return_by_quantile(_factor_data: object) -> tuple[_FakeFrame, None]:
+            return _FakeFrame({1: {"1D": _ObjectMetric()}}), None
+
+    _patch_alphalens(monkeypatch, _ObjectMetricPerformance)
+
+    with pytest.raises(BacktestRunnerError, match="JSON convertible"):
+        AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
+
+
+def test_alphalens_adapter_rejects_failed_numeric_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BadMeanSeries:
+        def dropna(self) -> "_BadMeanSeries":
+            return self
+
+        def mean(self) -> object:
+            raise RuntimeError("cannot reduce")
+
+    class _BadReductionPerformance(_FakePerformance):
+        @staticmethod
+        def factor_rank_autocorrelation(  # type: ignore[override]
+            _factor_data: object,
+            *,
+            period: int,
+        ) -> _BadMeanSeries:
+            assert period == 1
+            return _BadMeanSeries()
+
+    _patch_alphalens(monkeypatch, _BadReductionPerformance)
+
+    with pytest.raises(BacktestRunnerError, match="numeric metric reduction"):
+        AlphalensAdapter(_Gateway()).run("feature://momentum/v1", _snapshot_range())
 
 
 def test_alphalens_adapter_rejects_forbidden_metric_fields(

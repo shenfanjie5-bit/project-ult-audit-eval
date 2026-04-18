@@ -230,11 +230,11 @@ def test_replay_cycle_object_returns_manifest_bound_replay_view() -> None:
         "dagster_run_summary",
         "graph_snapshot",
         "graph_snapshot_ref",
-        "graph_snapshot_summary",
         "historical_formal_objects",
         "manifest_snapshot_set",
         "replay_record",
     }
+    assert "graph_snapshot_summary" not in replay_dict
     json.dumps(replay_dict)
 
     manifest_refs = set(replay_dict["manifest_snapshot_set"].values())

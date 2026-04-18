@@ -99,6 +99,10 @@ class InMemoryDriftReportJsonWriter:
             self.write_calls.append((report_id, payload_copy))
         return f"{self.ref_prefix}/{report_id}.json"
 
+    def delete_report_json(self, report_id: str) -> None:
+        with self._lock:
+            self.payloads_by_report_id.pop(report_id, None)
+
 
 class InMemoryDriftReportStorage:
     """In-memory analytical drift report storage for tests and Lite workflows."""

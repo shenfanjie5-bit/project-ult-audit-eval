@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from audit_eval.drift import (
     DriftInputError,
+    DriftRuleConfig,
     DriftRunnerError,
     DriftStorageError,
     DriftedFeature,
@@ -38,6 +38,23 @@ class _BlankRefJsonWriter:
     def write_report_json(self, report_id: str, payload: dict[str, Any]) -> str:
         self.write_calls.append((report_id, payload))
         return self.returned_ref
+
+
+class _FailingStorage:
+    def __init__(
+        self,
+        exc: Exception | None = None,
+        report_id: str | None = None,
+    ) -> None:
+        self.exc = exc
+        self.report_id = report_id
+        self.append_calls = 0
+
+    def append_drift_report(self, report: object) -> str:
+        self.append_calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return self.report_id or getattr(report, "report_id")
 
 
 @pytest.fixture(autouse=True)
@@ -127,20 +144,19 @@ def test_run_drift_report_uses_all_boundaries_and_appends_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reference_ref", "target_ref", "error_type", "match"),
+    ("reference_ref", "target_ref", "match"),
     [
-        ("", "target", ValueError, "reference_ref must not be empty"),
-        ("   ", "target", ValueError, "reference_ref must not be empty"),
-        ("baseline", "", ValueError, "target_ref must not be empty"),
-        ("baseline", " \t ", ValueError, "target_ref must not be empty"),
-        (123, "target", TypeError, "reference_ref must be a string"),
-        ("baseline", object(), TypeError, "target_ref must be a string"),
+        ("", "target", "reference_ref must not be empty"),
+        ("   ", "target", "reference_ref must not be empty"),
+        ("baseline", "", "target_ref must not be empty"),
+        ("baseline", " \t ", "target_ref must not be empty"),
+        (123, "target", "reference_ref must be a string"),
+        ("baseline", object(), "target_ref must be a string"),
     ],
 )
 def test_run_drift_report_rejects_invalid_request_refs_before_adapters(
     reference_ref: object,
     target_ref: object,
-    error_type: type[Exception],
     match: str,
 ) -> None:
     input_gateway = InMemoryDriftInputGateway(
@@ -150,7 +166,7 @@ def test_run_drift_report_rejects_invalid_request_refs_before_adapters(
     json_writer = InMemoryDriftReportJsonWriter()
     storage = InMemoryDriftReportStorage()
 
-    with pytest.raises(error_type, match=match):
+    with pytest.raises(DriftInputError, match=match):
         run_drift_report(
             reference_ref,  # type: ignore[arg-type]
             target_ref,  # type: ignore[arg-type]
@@ -174,7 +190,7 @@ def test_run_drift_report_rejects_blank_cycle_id_before_adapters() -> None:
     json_writer = InMemoryDriftReportJsonWriter()
     storage = InMemoryDriftReportStorage()
 
-    with pytest.raises(ValueError, match="cycle_id must not be empty"):
+    with pytest.raises(DriftInputError, match="cycle_id must not be empty"):
         run_drift_report(
             "baseline",
             "target",
@@ -221,7 +237,7 @@ def test_run_drift_report_rejects_blank_writer_ref_before_storage(
     json_writer = _BlankRefJsonWriter(returned_ref)
     storage = InMemoryDriftReportStorage()
 
-    with pytest.raises(ValidationError, match="evidently_json_ref"):
+    with pytest.raises(DriftStorageError, match="evidently_json_ref"):
         run_drift_report(
             "baseline",
             "target",
@@ -235,6 +251,72 @@ def test_run_drift_report_rejects_blank_writer_ref_before_storage(
         )
 
     assert len(json_writer.write_calls) == 1
+    assert storage.append_calls == 0
+
+
+def test_run_drift_report_cleans_up_json_when_storage_fails() -> None:
+    json_writer = InMemoryDriftReportJsonWriter()
+    storage = _FailingStorage(RuntimeError("warehouse unavailable"))
+
+    with pytest.raises(DriftStorageError, match="append_drift_report"):
+        run_drift_report(
+            "baseline",
+            "target",
+            input_gateway=InMemoryDriftInputGateway(
+                {"baseline": {"x": [1]}, "target": {"x": [2]}}
+            ),
+            evidently_runner=InMemoryEvidentlyRunner(_runner_result()),
+            json_writer=json_writer,
+            storage=storage,  # type: ignore[arg-type]
+            created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+        )
+
+    assert storage.append_calls == 1
+    assert json_writer.payloads_by_report_id == {}
+
+
+def test_run_drift_report_rejects_storage_report_id_mismatch() -> None:
+    json_writer = InMemoryDriftReportJsonWriter()
+    storage = _FailingStorage(report_id="drift-other")
+
+    with pytest.raises(DriftStorageError, match="mismatched report_id"):
+        run_drift_report(
+            "baseline",
+            "target",
+            input_gateway=InMemoryDriftInputGateway(
+                {"baseline": {"x": [1]}, "target": {"x": [2]}}
+            ),
+            evidently_runner=InMemoryEvidentlyRunner(_runner_result()),
+            json_writer=json_writer,
+            storage=storage,  # type: ignore[arg-type]
+            created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+        )
+
+    assert storage.append_calls == 1
+    assert json_writer.payloads_by_report_id == {}
+
+
+def test_invalid_rules_version_fails_before_writer_or_storage() -> None:
+    rules = DriftRuleConfig()
+    object.__setattr__(rules, "version", "   ")
+    json_writer = InMemoryDriftReportJsonWriter()
+    storage = InMemoryDriftReportStorage()
+
+    with pytest.raises(DriftInputError, match="contract validation"):
+        run_drift_report(
+            "baseline",
+            "target",
+            input_gateway=InMemoryDriftInputGateway(
+                {"baseline": {"x": [1]}, "target": {"x": [2]}}
+            ),
+            evidently_runner=InMemoryEvidentlyRunner(_runner_result()),
+            json_writer=json_writer,
+            storage=storage,
+            rules=rules,
+            created_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+        )
+
+    assert json_writer.write_calls == []
     assert storage.append_calls == 0
 
 

@@ -7,6 +7,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from numbers import Real
 from typing import Any, Protocol
 
 from audit_eval._boundary import BoundaryViolationError, assert_no_forbidden_write
@@ -32,12 +33,18 @@ class AlphalensAdapter:
     def __init__(self, gateway: AlphalensInputGateway | None = None) -> None:
         self.gateway = gateway
 
-    def run(self, feature_ref: str, snapshot_range: JsonObject) -> JsonObject:
+    def run(
+        self,
+        feature_ref: str,
+        snapshot_range: JsonObject,
+        metrics_config: JsonObject | None = None,
+    ) -> JsonObject:
         """Return JSON metrics for one point-in-time factor snapshot range."""
 
+        config = _normalize_metrics_config(metrics_config)
         performance = _load_alphalens_performance()
         factor_data = self._load_factor_data(feature_ref, snapshot_range)
-        metrics = self._run_performance_metrics(performance, factor_data)
+        metrics = self._run_performance_metrics(performance, factor_data, config)
         try:
             assert_no_forbidden_write(metrics, path="$.backtest_metrics")
         except BoundaryViolationError as exc:
@@ -72,15 +79,21 @@ class AlphalensAdapter:
         self,
         performance: Any,
         factor_data: Any,
+        metrics_config: JsonObject,
     ) -> JsonObject:
+        period = _metrics_period(metrics_config)
         try:
             ic = performance.factor_information_coefficient(factor_data)
             mean_returns, _ = performance.mean_return_by_quantile(factor_data)
             autocorrelation = performance.factor_rank_autocorrelation(
                 factor_data,
-                period=1,
+                period=period,
             )
-            turnover = _compute_quantile_turnover(performance, factor_data)
+            turnover = _compute_quantile_turnover(
+                performance,
+                factor_data,
+                period=period,
+            )
         except Exception as exc:
             raise BacktestRunnerError("Alphalens metrics computation failed") from exc
 
@@ -138,7 +151,29 @@ def _validate_factor_data_shape(factor_data: Any) -> None:
         )
 
 
-def _compute_quantile_turnover(performance: Any, factor_data: Any) -> JsonObject:
+def _normalize_metrics_config(metrics_config: JsonObject | None) -> JsonObject:
+    if metrics_config is None:
+        return {}
+    if not isinstance(metrics_config, dict):
+        raise BacktestRunnerError("metrics_config must be a JSON object")
+    return deepcopy(metrics_config)
+
+
+def _metrics_period(metrics_config: JsonObject) -> int:
+    raw_period = metrics_config.get("period", 1)
+    if isinstance(raw_period, bool) or not isinstance(raw_period, int):
+        raise BacktestRunnerError("metrics_config.period must be a positive integer")
+    if raw_period <= 0:
+        raise BacktestRunnerError("metrics_config.period must be a positive integer")
+    return raw_period
+
+
+def _compute_quantile_turnover(
+    performance: Any,
+    factor_data: Any,
+    *,
+    period: int,
+) -> JsonObject:
     quantiles = _unique_quantiles(factor_data)
     turnover: JsonObject = {}
     if not quantiles:
@@ -151,7 +186,7 @@ def _compute_quantile_turnover(performance: Any, factor_data: Any) -> JsonObject
                 performance.quantile_turnover(
                     factor_quantile,
                     quantile=quantile,
-                    period=1,
+                    period=period,
                 )
             )
         except Exception:
@@ -199,26 +234,28 @@ def _mapping_to_json(value: Any) -> JsonObject:
     raise BacktestRunnerError("Alphalens metric output is not a mapping")
 
 
-def _mean_numeric(value: Any) -> float | None:
+def _mean_numeric(value: Any) -> float:
     if value is None:
-        return None
+        raise BacktestRunnerError("Alphalens numeric metric is missing")
     try:
         if hasattr(value, "dropna"):
             value = value.dropna()
         if hasattr(value, "mean"):
             value = value.mean()
         return _json_number(value)
-    except Exception:
-        return None
+    except BacktestRunnerError:
+        raise
+    except Exception as exc:
+        raise BacktestRunnerError("Alphalens numeric metric reduction failed") from exc
 
 
-def _json_number(value: Any) -> float | None:
+def _json_number(value: Any) -> float:
     try:
         numeric = float(value)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        raise BacktestRunnerError("Alphalens metric value must be numeric") from exc
     if math.isnan(numeric) or math.isinf(numeric):
-        return None
+        raise BacktestRunnerError("Alphalens metric value must be finite")
     return numeric
 
 
@@ -226,11 +263,12 @@ def _json_scalar(value: Any) -> object:
     if value is None or isinstance(value, str | bool | int):
         return value
     if isinstance(value, float):
-        return value if not (math.isnan(value) or math.isinf(value)) else None
-    number = _json_number(value)
-    if number is not None:
-        return number
-    return str(value)
+        if math.isnan(value) or math.isinf(value):
+            raise BacktestRunnerError("Alphalens metric value must be finite")
+        return value
+    if isinstance(value, Real):
+        return _json_number(value)
+    raise BacktestRunnerError("Alphalens metric output is not JSON convertible")
 
 
 def _json_clean(value: Any) -> Any:

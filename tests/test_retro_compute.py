@@ -255,6 +255,10 @@ def test_compute_retrospective_t_plus_1_uses_replay_and_appends_evaluation() -> 
     assert evaluation.deviation_level == 2
     assert evaluation.hit_rate_rel == 0.42
     assert evaluation.baseline_vs_llm_breakdown == {
+        "baseline_trend_score": 0.5,
+        "llm_trend_adjustment": 0.5,
+        "baseline_risk_score": 1.5,
+        "llm_risk_adjustment": 0.5,
         "baseline_hit": False,
         "llm_hit": True,
         "notes": "fixture outcome",
@@ -334,14 +338,14 @@ def test_extract_retrospective_seed_rejects_missing_or_non_numeric_scores(
 
 def test_calculate_deviation_returns_absolute_t_plus_1_deviation() -> None:
     result = calculate_deviation(
-        RetrospectiveSeed("cycle", "object", 1.0, 4.0, {}),
+        RetrospectiveSeed("cycle", "object", 1.0, 4.0, {"layer": "L7"}),
         MarketOutcome("cycle", "object", "T+1", 3.5, 1.0, None, {"source": "test"}),
     )
 
     assert result.trend_deviation == 2.5
     assert result.risk_deviation == 3.0
     assert result.hit_rate_rel is None
-    assert result.baseline_vs_llm_breakdown == {"source": "test"}
+    assert result.baseline_vs_llm_breakdown == {"layer": "L7", "source": "test"}
 
 
 def test_compute_retrospective_calls_replay_cycle_object(
