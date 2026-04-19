@@ -3,7 +3,7 @@ PYTHONPATH ?= src
 export PYTHONPATH
 export PYTHONDONTWRITEBYTECODE ?= 1
 
-.PHONY: install install-backtest test lint typecheck bytecode-clean backtest-smoke ci
+.PHONY: install install-backtest test test-fast smoke lint typecheck bytecode-clean backtest-smoke ci
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -11,8 +11,19 @@ install:
 install-backtest:
 	$(PYTHON) -m pip install -e ".[dev,backtest]"
 
+# Full test suite — legacy tests remain in tests/ root, new canonical-tier
+# tests live under tests/{unit,boundary,smoke,...}. pytest collects both.
 test:
 	$(PYTHON) -m pytest
+
+# Fast lane for PR CI and local pre-commit. unit + boundary only — no smoke
+# (smoke can hit infra-touching hooks even if currently no-op).
+test-fast:
+	$(PYTHON) -m pytest tests/unit tests/boundary -q
+
+# Minimal smoke — exercises public entrypoints. Must stay infra-free.
+smoke:
+	$(PYTHON) -m pytest tests/smoke -q
 
 lint:
 	$(PYTHON) -m ruff check .
