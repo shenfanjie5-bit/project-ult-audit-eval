@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-ult-audit-eval"
-version = "0.2.2"
+version = "0.2.3"
 description = "Audit, replay, retrospective, drift and backtest module for project-ult; ships shared fixtures for cross-module regression."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -115,6 +115,28 @@ class TestMinimalCycleTushareCaseLoadable:
             f"selected_ts_codes {selected!r}"
         )
 
+    def test_input_canonical_entity_id_follows_runtime_format(
+        self, minimal_cycle_case: Case
+    ) -> None:
+        """Codex review #1 P2 strict regression: the candidate's
+        canonical_entity_id MUST follow the live entity-registry runtime
+        rule ``generate_stock_entity_id(ts_code) = f'ENT_STOCK_{ts_code}'``
+        which preserves the dot in ts_code. Using the underscore-only
+        format ``ENT_STOCK_<symbol>_<exchange>`` (as case_001 does)
+        diverges from runtime and silently breaks 'consume case under
+        entity-registry rules' semantics. This test fixes the format
+        contract for new tushare-derived cases."""
+
+        candidate = minimal_cycle_case.input["candidate_universe"][0]
+        ts_code = candidate["ts_code"]
+        canonical_id = candidate["canonical_entity_id"]
+        expected = f"ENT_STOCK_{ts_code}"
+        assert canonical_id == expected, (
+            f"canonical_entity_id {canonical_id!r} drifted from runtime "
+            f"format generate_stock_entity_id({ts_code!r}) = {expected!r}; "
+            f"do NOT regress to underscore-only convention"
+        )
+
     def test_manifest_cycle_id_matches_expected_publish_manifest(
         self, minimal_cycle_case: Case
     ) -> None:
@@ -221,3 +243,39 @@ class TestNamechangeAliasTushareCaseLoadable:
             "selected_ts_codes"
         ]
         assert event_ts in selected
+
+    def test_canonical_entity_id_follows_runtime_format(
+        self, namechange_case: Case
+    ) -> None:
+        """Codex review #1 P2 strict regression: every canonical_entity_id
+        in this case (input.subject + every expected_resolutions entry)
+        MUST follow the live entity-registry runtime rule
+        ``generate_stock_entity_id(ts_code) = f'ENT_STOCK_{ts_code}'``
+        which preserves the dot. This is the contract that lets
+        downstream entity-registry consumers actually verify resolutions
+        against the runtime — not against a stale doc convention."""
+
+        ts_code = namechange_case.input["namechange_event"]["ts_code"]
+        expected_id = f"ENT_STOCK_{ts_code}"
+
+        # input.subject
+        subject_id = namechange_case.input["subject"]["canonical_entity_id"]
+        assert subject_id == expected_id, (
+            f"input.subject.canonical_entity_id {subject_id!r} drifted "
+            f"from runtime format {expected_id!r}"
+        )
+
+        # expected.expected_canonical_entity_id
+        top_id = namechange_case.expected["expected_canonical_entity_id"]
+        assert top_id == expected_id, (
+            f"expected.expected_canonical_entity_id {top_id!r} drifted "
+            f"from runtime format {expected_id!r}"
+        )
+
+        # expected.expected_resolutions[*].canonical_entity_id
+        for resolution in namechange_case.expected["expected_resolutions"]:
+            assert resolution["canonical_entity_id"] == expected_id, (
+                f"resolution {resolution['mention_id']!r} "
+                f"canonical_entity_id {resolution['canonical_entity_id']!r} "
+                f"drifted from runtime format {expected_id!r}"
+            )
