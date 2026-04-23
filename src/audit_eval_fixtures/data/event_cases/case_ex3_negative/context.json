@@ -13,7 +13,7 @@
     "*.hkex.com.hk"
   ],
   "entity_registry_snapshot_excerpt": {
-    "ENT_STOCK_300750_SZ": {
+    "ENT_STOCK_300750.SZ": {
       "display_name": "宁德时代",
       "anchor_code": "300750.SZ",
       "status": "active"

@@ -14,7 +14,7 @@
     {
       "fact_id": "fact-rumor-supplier-shift",
       "fact_type": "rumored_contract_change",
-      "entity_id": "ENT_STOCK_300750_SZ",
+      "entity_id": "ENT_STOCK_300750.SZ",
       "fact_content": {
         "rumor_text": "终止现有供货合同",
         "counterparty_hint": "某下游厂商"
@@ -35,7 +35,7 @@
   "candidate_graph_delta_attempt": {
     "delta_id": "delta-rumor-supplier-shift",
     "delta_type": "edge_remove",
-    "source_node": "ENT_STOCK_300750_SZ",
+    "source_node": "ENT_STOCK_300750.SZ",
     "target_node": "ENT_UNRESOLVED_DOWNSTREAM_PARTNER",
     "relation_type": "supplier_of",
     "properties": {
