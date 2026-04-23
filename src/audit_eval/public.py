@@ -41,7 +41,7 @@ from typing import Any
 from audit_eval._boundary import FORBIDDEN_WRITE_FIELDS
 
 _MODULE_ID = "audit-eval"
-_MODULE_VERSION = "0.2.4"
+_MODULE_VERSION = "0.2.5"
 _CONTRACT_VERSION = "v0.1.3"
 _COMPATIBLE_CONTRACT_RANGE = ">=0.1.0,<0.2.0"
 

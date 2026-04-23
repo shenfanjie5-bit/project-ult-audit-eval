@@ -1,12 +1,18 @@
-"""Tushare Phase B — loadability + invariant gate for the 2 tushare-derived shared cases.
+"""Tushare Phase B + #4 — loadability + invariant gate for tushare-derived shared cases.
 
-Plan: ~/.claude/plans/wise-cooking-wolf.md §6.2.3.
+Plan: ~/.claude/plans/wise-cooking-wolf.md §6.2.3 (Phase B)
+      and ~/.claude/plans/wise-cooking-wolf.md (#4 replay extension).
 
-Guards the 2 shared cases that Phase B cuts from the /Volumes/dockcase2tb
+Guards the 3 shared cases derived from the /Volumes/dockcase2tb
 Tushare corpus:
 
-    - minimal_cycle/case_tushare_one_stock_one_cycle
-    - event_cases/case_tushare_namechange_alias
+    - minimal_cycle/case_tushare_one_stock_one_cycle        (Phase B)
+    - event_cases/case_tushare_namechange_alias             (Phase B)
+    - historical_replay_pack/case_tushare_replay_t1_minimal_cycle
+                                                            (#4 — T+1 replay
+      extension chained to the minimal_cycle case via shared cycle_id /
+      manifest_cycle_id; hashes are real sha256 over a reproducible
+      construction recipe documented in ``metadata.hash_recipe``)
 
 The tests assert each case:
 
@@ -22,9 +28,21 @@ The tests assert each case:
 4. Carries a complete ``metadata.tushare_source`` block with the 8
    keys the Phase B traceability contract requires (plan §7), and
    ``completeness_status == "未见明显遗漏"``.
+5. (replay case only) Recomputed sha256 over the documented
+   construction strings equals the hashes baked into ``input.json``
+   and ``metadata.hash_recipe.{input,output}_hash_value`` (real
+   sha256, not synthetic).
+6. (replay case only) Chains to the minimal_cycle case at BOTH the
+   ``cycle_id`` level (audit/replay records + minimal_cycle input
+   share ``CYC_2026_03_31_DAILY``) AND the ``manifest_cycle_id``
+   level (metadata / manifest_refs / minimal_cycle metadata share
+   ``MAN_CYC_2026_03_31_DAILY``).
 """
 
 from __future__ import annotations
+
+import hashlib
+import json
 
 import pytest
 
@@ -53,6 +71,13 @@ def minimal_cycle_case() -> Case:
 @pytest.fixture(scope="module")
 def namechange_case() -> Case:
     return load_case("event_cases", "case_tushare_namechange_alias")
+
+
+@pytest.fixture(scope="module")
+def tushare_replay_case() -> Case:
+    return load_case(
+        "historical_replay_pack", "case_tushare_replay_t1_minimal_cycle"
+    )
 
 
 class TestMinimalCycleTushareCaseLoadable:
@@ -279,3 +304,270 @@ class TestNamechangeAliasTushareCaseLoadable:
                 f"canonical_entity_id {resolution['canonical_entity_id']!r} "
                 f"drifted from runtime format {expected_id!r}"
             )
+
+
+class TestTushareReplayT1CaseLoadable:
+    """historical_replay_pack/case_tushare_replay_t1_minimal_cycle.
+
+    Plan §2.1 (#4 — corpus-derived synthetic extension): this case is
+    the tushare-derived T+1 replay extension chained to the Phase B
+    ``minimal_cycle/case_tushare_one_stock_one_cycle`` case. Subject
+    600519.SH, cycle ``CYC_2026_03_31_DAILY``, manifest
+    ``MAN_CYC_2026_03_31_DAILY``. Hashes are REAL sha256 over the
+    construction recipe documented in ``metadata.hash_recipe`` — see
+    tests 7, 8.
+    """
+
+    def test_all_five_payloads_are_non_empty_dicts(
+        self, tushare_replay_case: Case
+    ) -> None:
+        for section in ("input", "context", "expected", "manifest_refs", "metadata"):
+            payload = getattr(tushare_replay_case, section)
+            assert isinstance(payload, dict), (
+                f"{section!r} must be a dict, got {type(payload).__name__}"
+            )
+            assert payload, f"{section!r} must be non-empty for this case"
+
+    def test_metadata_replay_mode_is_read_history(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """audit-eval CLAUDE.md C1: replay_mode must be read_history."""
+
+        assert tushare_replay_case.metadata["replay_mode"] == "read_history"
+
+    def test_metadata_fixture_kind_is_historical_replay_t1_tushare_extension(
+        self, tushare_replay_case: Case
+    ) -> None:
+        assert (
+            tushare_replay_case.metadata["fixture_kind"]
+            == "historical_replay_t1_tushare_extension"
+        )
+
+    def test_metadata_tushare_source_has_all_eight_traceability_keys(
+        self, tushare_replay_case: Case
+    ) -> None:
+        source = tushare_replay_case.metadata["tushare_source"]
+        assert isinstance(source, dict)
+        assert _REQUIRED_TRACEABILITY_KEYS.issubset(source.keys()), (
+            f"missing traceability keys: "
+            f"{_REQUIRED_TRACEABILITY_KEYS - source.keys()}"
+        )
+        assert source["completeness_status"] == "未见明显遗漏"
+
+    def test_metadata_hash_kind_is_real_sha256(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """Plan §4: hashes are real sha256 (not synthetic placeholders),
+        so reasoner-runtime's hash-equality regression path against
+        runtime ``sha256_text()`` actually has ground truth to compare
+        against."""
+
+        assert tushare_replay_case.metadata["hash_kind"] == "real_sha256"
+
+    def test_metadata_hash_recipe_documents_both_construction_strings(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """The recipe must describe HOW input_hash and output_hash were
+        constructed so any consumer can reproduce them deterministically."""
+
+        recipe = tushare_replay_case.metadata["hash_recipe"]
+        assert "sanitized_input_str_construction" in recipe
+        assert "raw_output_construction" in recipe
+        # Codex P3 finding B: recipe also carries the actual hash values
+        # (self-proving — consumer does not need to parse input.json to
+        # cross-check).
+        assert "input_hash_value" in recipe
+        assert "output_hash_value" in recipe
+
+    def test_input_hash_matches_metadata_recipe_sha256(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """Recompute ``sha256(sanitized_input_str)`` from the construction
+        recipe and assert it equals the hash recorded in both the
+        audit_record llm_lineage and the replay_record replay_bundle.
+        Any drift between the construction string and the recorded
+        hash fails immediately."""
+
+        sanitized_input_str = json.dumps(
+            {
+                "candidate_features": "[REDACTED-PII-OK-FOR-FIXTURE]",
+                "world_state_summary": "neutral_minimal_cycle",
+            },
+            sort_keys=True,
+        )
+        recomputed = hashlib.sha256(
+            sanitized_input_str.encode("utf-8")
+        ).hexdigest()
+
+        recorded_audit = tushare_replay_case.input["audit_record"][
+            "llm_lineage"
+        ]["input_hash"]
+        recorded_replay = tushare_replay_case.input["replay_record"][
+            "replay_bundle"
+        ]["input_hash"]
+        recipe_value = tushare_replay_case.metadata["hash_recipe"][
+            "input_hash_value"
+        ]
+
+        assert recomputed == recorded_audit, (
+            f"recomputed input_hash {recomputed!r} != audit_record "
+            f"llm_lineage.input_hash {recorded_audit!r}"
+        )
+        assert recomputed == recorded_replay, (
+            f"recomputed input_hash {recomputed!r} != replay_record "
+            f"replay_bundle.input_hash {recorded_replay!r}"
+        )
+        assert recomputed == recipe_value, (
+            f"recomputed input_hash {recomputed!r} != "
+            f"metadata.hash_recipe.input_hash_value {recipe_value!r}"
+        )
+
+    def test_output_hash_matches_metadata_recipe_sha256(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """Same round-trip check for output_hash. Note ``sort_keys=False``
+        is part of the contract (matches the recipe description)."""
+
+        raw_output_str = json.dumps(
+            {"alpha": 0.31, "reason": "baseline forward liquidity intact"},
+            sort_keys=False,
+        )
+        recomputed = hashlib.sha256(
+            raw_output_str.encode("utf-8")
+        ).hexdigest()
+
+        recorded_audit = tushare_replay_case.input["audit_record"][
+            "llm_lineage"
+        ]["output_hash"]
+        recorded_replay = tushare_replay_case.input["replay_record"][
+            "replay_bundle"
+        ]["output_hash"]
+        recipe_value = tushare_replay_case.metadata["hash_recipe"][
+            "output_hash_value"
+        ]
+
+        assert recomputed == recorded_audit
+        assert recomputed == recorded_replay
+        assert recomputed == recipe_value
+
+    def test_replay_bundle_has_all_five_fields(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """audit-eval CLAUDE.md C5: all 5 replay fields must be present."""
+
+        bundle = tushare_replay_case.input["replay_record"]["replay_bundle"]
+        for field in (
+            "sanitized_input",
+            "input_hash",
+            "raw_output",
+            "parsed_result",
+            "output_hash",
+        ):
+            assert field in bundle, (
+                f"replay bundle missing required field {field!r}"
+            )
+
+    def test_manifest_cycle_id_chain_matches_minimal_cycle(
+        self,
+        tushare_replay_case: Case,
+        minimal_cycle_case: Case,
+    ) -> None:
+        """Plan §1: the replay case must chain to Phase B minimal_cycle's
+        manifest axis. ``metadata.manifest_cycle_id`` must equal
+        ``manifest_refs.cycle_publish_manifest_id`` AND must equal the
+        minimal_cycle case's ``manifest_cycle_id``. This prevents the
+        replay case from drifting onto a different publish manifest."""
+
+        metadata_manifest = tushare_replay_case.metadata["manifest_cycle_id"]
+        refs_manifest = tushare_replay_case.manifest_refs[
+            "cycle_publish_manifest_id"
+        ]
+        minimal_manifest = minimal_cycle_case.metadata["manifest_cycle_id"]
+
+        assert metadata_manifest == refs_manifest, (
+            f"metadata.manifest_cycle_id {metadata_manifest!r} != "
+            f"manifest_refs.cycle_publish_manifest_id {refs_manifest!r}"
+        )
+        assert metadata_manifest == minimal_manifest, (
+            f"metadata.manifest_cycle_id {metadata_manifest!r} diverged "
+            f"from minimal_cycle case manifest_cycle_id {minimal_manifest!r} "
+            f"— replay case must chain to the same publish manifest"
+        )
+
+    def test_input_audit_and_replay_record_share_cycle_and_object_ref(
+        self, tushare_replay_case: Case
+    ) -> None:
+        """Intra-case consistency: audit_record and replay_record must
+        reference the same cycle and the same published object."""
+
+        audit = tushare_replay_case.input["audit_record"]
+        replay = tushare_replay_case.input["replay_record"]
+        assert audit["cycle_id"] == replay["cycle_id"]
+        assert audit["object_ref"] == replay["object_ref"]
+
+    def test_subject_ts_code_matches_minimal_cycle_case(
+        self,
+        tushare_replay_case: Case,
+        minimal_cycle_case: Case,
+    ) -> None:
+        """Plan §1: the replay case's subject MUST be the single-stock
+        corpus cut that Phase B minimal_cycle uses (600519.SH). The
+        object_ref path already encodes 600519.SH, and both cases'
+        tushare_source.selected_ts_codes must agree."""
+
+        replay_selected = tushare_replay_case.metadata["tushare_source"][
+            "selected_ts_codes"
+        ]
+        minimal_selected = minimal_cycle_case.metadata["tushare_source"][
+            "selected_ts_codes"
+        ]
+        assert replay_selected == minimal_selected, (
+            f"replay case selected_ts_codes {replay_selected!r} differs "
+            f"from minimal_cycle selected_ts_codes {minimal_selected!r}"
+        )
+        assert replay_selected == ["600519.SH"]
+        # object_ref path must encode the subject ts_code.
+        audit_object_ref = tushare_replay_case.input["audit_record"][
+            "object_ref"
+        ]
+        assert "600519.SH" in audit_object_ref
+
+    def test_cycle_id_chain_matches_minimal_cycle(
+        self,
+        tushare_replay_case: Case,
+        minimal_cycle_case: Case,
+    ) -> None:
+        """Codex P2 add, 2026-04-24: complement to
+        ``test_manifest_cycle_id_chain_matches_minimal_cycle`` — covers
+        the ``cycle_id`` level of the chain, not just the
+        ``manifest_cycle_id`` level.
+
+        Without this, a future edit could put the replay case on a
+        different ``cycle_id`` while still pointing at the same
+        ``manifest_cycle_id`` — silently breaking the "replay pulls L6
+        from the same published cycle Phase B minimal_cycle produced"
+        design claim.
+
+        Asserts:
+          audit_record.cycle_id
+            == replay_record.cycle_id
+            == minimal_cycle_case.input["cycle_id"]
+            == "CYC_2026_03_31_DAILY"
+        """
+
+        audit_cycle = tushare_replay_case.input["audit_record"]["cycle_id"]
+        replay_cycle = tushare_replay_case.input["replay_record"]["cycle_id"]
+        minimal_cycle = minimal_cycle_case.input["cycle_id"]
+
+        assert audit_cycle == replay_cycle, (
+            f"audit_record.cycle_id {audit_cycle!r} != replay_record.cycle_id "
+            f"{replay_cycle!r} — intra-case cycle_id split"
+        )
+        assert audit_cycle == minimal_cycle, (
+            f"replay case cycle_id {audit_cycle!r} diverged from minimal_cycle "
+            f"case cycle_id {minimal_cycle!r} — the two cases must share a "
+            f"cycle axis so 'replay the L6 alpha_result for 600519 from the "
+            f"cycle Phase B minimal_cycle published' is a coherent consumer "
+            f"story"
+        )
+        assert audit_cycle == "CYC_2026_03_31_DAILY"
