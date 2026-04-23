@@ -42,7 +42,6 @@ The tests assert each case:
 from __future__ import annotations
 
 import hashlib
-import json
 
 import pytest
 
@@ -379,76 +378,92 @@ class TestTushareReplayT1CaseLoadable:
         assert "input_hash_value" in recipe
         assert "output_hash_value" in recipe
 
-    def test_input_hash_matches_metadata_recipe_sha256(
+    def test_input_hash_matches_replay_bundle_sanitized_input_sha256(
         self, tushare_replay_case: Case
     ) -> None:
-        """Recompute ``sha256(sanitized_input_str)`` from the construction
-        recipe and assert it equals the hash recorded in both the
-        audit_record llm_lineage and the replay_record replay_bundle.
-        Any drift between the construction string and the recorded
-        hash fails immediately."""
+        """Codex P3 strengthening, 2026-04-24: hash the fixture's **own**
+        ``replay_bundle.sanitized_input`` string (NOT a hard-coded
+        literal in the test body) and assert 4-way equality against
+        every recorded input_hash.
 
-        sanitized_input_str = json.dumps(
-            {
-                "candidate_features": "[REDACTED-PII-OK-FOR-FIXTURE]",
-                "world_state_summary": "neutral_minimal_cycle",
-            },
-            sort_keys=True,
-        )
+        Previously the test re-hashed a hard-coded dict literal — which
+        would happily pass even if a future edit changed
+        ``replay_bundle.sanitized_input`` in input.json while leaving
+        the recorded hashes alone. The fix binds the hash guard
+        directly to the bundled payload:
+
+            sha256(replay_bundle["sanitized_input"])
+              == replay_bundle["input_hash"]
+              == audit_record.llm_lineage.input_hash
+              == metadata.hash_recipe.input_hash_value
+        """
+
+        bundle = tushare_replay_case.input["replay_record"]["replay_bundle"]
+        sanitized_input = bundle["sanitized_input"]
         recomputed = hashlib.sha256(
-            sanitized_input_str.encode("utf-8")
+            sanitized_input.encode("utf-8")
         ).hexdigest()
 
+        recorded_bundle = bundle["input_hash"]
         recorded_audit = tushare_replay_case.input["audit_record"][
             "llm_lineage"
-        ]["input_hash"]
-        recorded_replay = tushare_replay_case.input["replay_record"][
-            "replay_bundle"
         ]["input_hash"]
         recipe_value = tushare_replay_case.metadata["hash_recipe"][
             "input_hash_value"
         ]
 
-        assert recomputed == recorded_audit, (
-            f"recomputed input_hash {recomputed!r} != audit_record "
-            f"llm_lineage.input_hash {recorded_audit!r}"
+        assert recomputed == recorded_bundle, (
+            f"sha256(replay_bundle.sanitized_input) {recomputed!r} != "
+            f"replay_bundle.input_hash {recorded_bundle!r} — fixture "
+            f"payload was edited but the recorded hash was not updated"
         )
-        assert recomputed == recorded_replay, (
-            f"recomputed input_hash {recomputed!r} != replay_record "
-            f"replay_bundle.input_hash {recorded_replay!r}"
+        assert recomputed == recorded_audit, (
+            f"sha256(replay_bundle.sanitized_input) {recomputed!r} != "
+            f"audit_record.llm_lineage.input_hash {recorded_audit!r}"
         )
         assert recomputed == recipe_value, (
-            f"recomputed input_hash {recomputed!r} != "
+            f"sha256(replay_bundle.sanitized_input) {recomputed!r} != "
             f"metadata.hash_recipe.input_hash_value {recipe_value!r}"
         )
 
-    def test_output_hash_matches_metadata_recipe_sha256(
+    def test_output_hash_matches_replay_bundle_raw_output_sha256(
         self, tushare_replay_case: Case
     ) -> None:
-        """Same round-trip check for output_hash. Note ``sort_keys=False``
-        is part of the contract (matches the recipe description)."""
+        """Codex P3 strengthening, 2026-04-24: symmetric fix for the
+        output side. Hashes the fixture's own ``replay_bundle.raw_output``
+        string and asserts 4-way equality.
 
-        raw_output_str = json.dumps(
-            {"alpha": 0.31, "reason": "baseline forward liquidity intact"},
-            sort_keys=False,
-        )
-        recomputed = hashlib.sha256(
-            raw_output_str.encode("utf-8")
-        ).hexdigest()
+            sha256(replay_bundle["raw_output"])
+              == replay_bundle["output_hash"]
+              == audit_record.llm_lineage.output_hash
+              == metadata.hash_recipe.output_hash_value
+        """
 
+        bundle = tushare_replay_case.input["replay_record"]["replay_bundle"]
+        raw_output = bundle["raw_output"]
+        recomputed = hashlib.sha256(raw_output.encode("utf-8")).hexdigest()
+
+        recorded_bundle = bundle["output_hash"]
         recorded_audit = tushare_replay_case.input["audit_record"][
             "llm_lineage"
-        ]["output_hash"]
-        recorded_replay = tushare_replay_case.input["replay_record"][
-            "replay_bundle"
         ]["output_hash"]
         recipe_value = tushare_replay_case.metadata["hash_recipe"][
             "output_hash_value"
         ]
 
-        assert recomputed == recorded_audit
-        assert recomputed == recorded_replay
-        assert recomputed == recipe_value
+        assert recomputed == recorded_bundle, (
+            f"sha256(replay_bundle.raw_output) {recomputed!r} != "
+            f"replay_bundle.output_hash {recorded_bundle!r} — fixture "
+            f"payload was edited but the recorded hash was not updated"
+        )
+        assert recomputed == recorded_audit, (
+            f"sha256(replay_bundle.raw_output) {recomputed!r} != "
+            f"audit_record.llm_lineage.output_hash {recorded_audit!r}"
+        )
+        assert recomputed == recipe_value, (
+            f"sha256(replay_bundle.raw_output) {recomputed!r} != "
+            f"metadata.hash_recipe.output_hash_value {recipe_value!r}"
+        )
 
     def test_replay_bundle_has_all_five_fields(
         self, tushare_replay_case: Case
