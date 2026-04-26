@@ -256,6 +256,27 @@ def test_replay_cycle_object_returns_manifest_bound_replay_view() -> None:
     )
 
 
+def test_replay_cycle_object_allows_distinct_manifest_cycle_id() -> None:
+    replay_record = _recommendation_replay_record().model_copy(
+        update={"manifest_cycle_id": "manifest-cycle_20260410"}
+    )
+    manifest = _fixture_manifest().model_copy(
+        update={"published_cycle_id": "manifest-cycle_20260410"}
+    )
+    context, calls = _context(replay_record=replay_record, manifest=manifest)
+
+    replay_view = replay_cycle_object(
+        "cycle_20260410",
+        "recommendation",
+        context=context,
+    )
+
+    assert calls[0:2] == ["replay_record", "manifest"]
+    assert replay_view.cycle_id == "cycle_20260410"
+    assert replay_view.replay_record.manifest_cycle_id == "manifest-cycle_20260410"
+    assert replay_view.manifest_snapshot_set == dict(manifest.snapshot_refs)
+
+
 def test_default_context_fails_closed() -> None:
     with pytest.raises(ReplayQueryError, match="No default replay query context"):
         replay_cycle_object("cycle_20260410", "recommendation")

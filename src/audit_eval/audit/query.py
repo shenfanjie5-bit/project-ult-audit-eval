@@ -133,11 +133,6 @@ def _validate_replay_record_binding(
             f'ReplayRecord.replay_mode must be "read_history", got '
             f"{replay_record.replay_mode!r}"
         )
-    if replay_record.manifest_cycle_id != cycle_id:
-        raise ManifestBindingError(
-            "ReplayRecord.manifest_cycle_id does not match requested cycle_id: "
-            f"{replay_record.manifest_cycle_id!r} != {cycle_id!r}"
-        )
 
 
 def _validate_manifest_binding(

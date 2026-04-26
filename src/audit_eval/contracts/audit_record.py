@@ -1,11 +1,15 @@
 """Formal audit record runtime contract."""
 
+import hashlib
+import re
 from datetime import datetime
 from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from audit_eval.contracts.common import JsonObject, LayerName
+
+_SHA256_RE = re.compile(r"^(?:sha256:)?(?P<digest>[0-9a-fA-F]{64})$")
 
 
 class AuditRecord(BaseModel):
@@ -63,7 +67,56 @@ class AuditRecord(BaseModel):
                     "LLM-called audit records require replay fields: "
                     f"{fields}"
                 )
+            _validate_replay_hash(
+                field_name="input_hash",
+                hash_value=self.input_hash,
+                source_field="sanitized_input",
+                source_value=self.sanitized_input,
+                lineage=self.llm_lineage,
+            )
+            _validate_replay_hash(
+                field_name="output_hash",
+                hash_value=self.output_hash,
+                source_field="raw_output",
+                source_value=self.raw_output,
+                lineage=self.llm_lineage,
+            )
         return self
+
+
+def _validate_replay_hash(
+    *,
+    field_name: str,
+    hash_value: str | None,
+    source_field: str,
+    source_value: str | None,
+    lineage: JsonObject,
+) -> None:
+    if hash_value is None or source_value is None:
+        raise ValueError(f"LLM-called audit records require {field_name}")
+
+    recorded_digest = _normalize_sha256(field_name, hash_value)
+    recomputed_digest = hashlib.sha256(source_value.encode("utf-8")).hexdigest()
+    if recorded_digest != recomputed_digest:
+        raise ValueError(
+            f"{field_name} does not match sha256({source_field})"
+        )
+
+    lineage_value = lineage.get(field_name)
+    if lineage_value is None:
+        return
+    if not isinstance(lineage_value, str):
+        raise ValueError(f"llm_lineage.{field_name} must be a sha256 string")
+    lineage_digest = _normalize_sha256(f"llm_lineage.{field_name}", lineage_value)
+    if lineage_digest != recorded_digest:
+        raise ValueError(f"llm_lineage.{field_name} does not match {field_name}")
+
+
+def _normalize_sha256(field_name: str, value: str) -> str:
+    match = _SHA256_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(f"{field_name} must be a sha256 digest")
+    return match.group("digest").lower()
 
 
 __all__ = ["AuditRecord"]

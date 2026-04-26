@@ -69,6 +69,38 @@ def test_audit_record_requires_each_replay_field_when_llm_called() -> None:
             AuditRecord.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value", "match"),
+    [
+        ("input_hash", "0" * 64, "input_hash"),
+        ("output_hash", "1" * 64, "output_hash"),
+        ("input_hash", "sha256:not-a-real-digest", "sha256 digest"),
+        ("output_hash", "sha256:not-a-real-digest", "sha256 digest"),
+    ],
+)
+def test_audit_record_recomputes_replay_hashes_when_llm_called(
+    field_name: str,
+    value: str,
+    match: str,
+) -> None:
+    payload = _audit_payload()
+    payload[field_name] = value
+
+    with pytest.raises(ValidationError, match=match):
+        AuditRecord.model_validate(payload)
+
+
+def test_audit_record_validates_lineage_hash_copies_when_present() -> None:
+    payload = _audit_payload()
+    payload["llm_lineage"] = {
+        **payload["llm_lineage"],
+        "input_hash": "0" * 64,
+    }
+
+    with pytest.raises(ValidationError, match="llm_lineage.input_hash"):
+        AuditRecord.model_validate(payload)
+
+
 def test_audit_record_allows_null_replay_fields_when_llm_not_called() -> None:
     payload = _audit_payload()
     payload["llm_lineage"] = {"called": False}

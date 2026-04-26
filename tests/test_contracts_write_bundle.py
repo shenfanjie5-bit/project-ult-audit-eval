@@ -54,6 +54,25 @@ def test_write_bundle_accepts_fixture_payloads_and_builds_indexes() -> None:
     )
 
 
+def test_write_bundle_allows_manifest_cycle_id_distinct_from_execution_cycle() -> None:
+    payload = _bundle_payload()
+    payload["manifest_cycle_id"] = "manifest-cycle_20260410"
+    for replay_record in payload["replay_records"]:
+        replay_record["manifest_cycle_id"] = "manifest-cycle_20260410"
+
+    bundle = AuditWriteBundle.model_validate(payload)
+
+    assert {record.cycle_id for record in bundle.audit_records} == {
+        "cycle_20260410"
+    }
+    assert {record.cycle_id for record in bundle.replay_records} == {
+        "cycle_20260410"
+    }
+    assert {
+        record.manifest_cycle_id for record in bundle.replay_records
+    } == {"manifest-cycle_20260410"}
+
+
 def test_write_bundle_rejects_missing_referenced_audit_record_id() -> None:
     payload = _bundle_payload()
     payload["replay_records"][1]["audit_record_ids"].append("audit-missing")

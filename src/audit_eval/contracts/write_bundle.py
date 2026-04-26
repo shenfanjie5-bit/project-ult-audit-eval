@@ -46,20 +46,19 @@ class AuditWriteBundle(BaseModel):
             field_name="ReplayRecord.cycle_id/object_ref",
         )
 
-        audit_records_by_id = self.audit_records_by_id()
-        for audit_record in self.audit_records:
-            if audit_record.cycle_id != self.manifest_cycle_id:
-                raise ValueError(
-                    "AuditRecord.cycle_id must match "
-                    "AuditWriteBundle.manifest_cycle_id"
-                )
+        cycle_ids = {
+            *(record.cycle_id for record in self.audit_records),
+            *(record.cycle_id for record in self.replay_records),
+        }
+        if len(cycle_ids) != 1:
+            cycle_id_text = ", ".join(sorted(cycle_ids))
+            raise ValueError(
+                "AuditRecord.cycle_id and ReplayRecord.cycle_id must share "
+                f"one cycle_id: {cycle_id_text}"
+            )
 
+        audit_records_by_id = self.audit_records_by_id()
         for replay_record in self.replay_records:
-            if replay_record.cycle_id != self.manifest_cycle_id:
-                raise ValueError(
-                    "ReplayRecord.cycle_id must match "
-                    "AuditWriteBundle.manifest_cycle_id"
-                )
             if replay_record.manifest_cycle_id != self.manifest_cycle_id:
                 raise ValueError(
                     "ReplayRecord.manifest_cycle_id must match "
