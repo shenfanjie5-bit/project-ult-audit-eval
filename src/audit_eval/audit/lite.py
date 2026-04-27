@@ -40,6 +40,18 @@ class InMemoryReplayRepository:
             )
         return matches[0] if matches else None
 
+    def get_replay_record_by_id(self, replay_id: str) -> ReplayRecord | None:
+        matches = [
+            ReplayRecord.model_validate(deepcopy(row))
+            for row in self.storage.replay_rows
+            if row.get("replay_id") == replay_id
+        ]
+        if len(matches) > 1:
+            raise ReplayQueryError(
+                f"Expected at most one replay_record for replay_id={replay_id!r}"
+            )
+        return matches[0] if matches else None
+
     def get_audit_records(self, record_ids: Sequence[str]) -> list[AuditRecord]:
         requested_ids = set(record_ids)
         if not requested_ids:

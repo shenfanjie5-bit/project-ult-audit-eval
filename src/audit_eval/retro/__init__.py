@@ -25,6 +25,18 @@ from audit_eval.retro.horizon import (
     require_mature_horizon,
     resolve_evaluation_date,
 )
+from audit_eval.retro.hook import (
+    InMemoryRetrospectiveHookStatusStorage,
+    RetrospectiveHookError,
+    RetrospectiveHookReplayIdRepository,
+    RetrospectiveHookReplayRepository,
+    RetrospectiveHookRequest,
+    RetrospectiveHookResult,
+    RetrospectiveHookState,
+    RetrospectiveHookStatus,
+    RetrospectiveHookStatusStorage,
+    run_real_retrospective_hook,
+)
 from audit_eval.retro.schema import (
     DeviationResult,
     MarketOutcome,
@@ -59,6 +71,7 @@ __all__ = [
     "DeviationResult",
     "HORIZONS",
     "HorizonCoverageReport",
+    "InMemoryRetrospectiveHookStatusStorage",
     "InMemoryRetrospectiveCurrentViewStorage",
     "InMemoryRetrospectiveEvaluationReader",
     "InMemoryRetrospectiveEvaluationStorage",
@@ -68,6 +81,14 @@ __all__ = [
     "RetrospectiveCurrentViewStorage",
     "RetrospectiveEvaluationReader",
     "RetrospectiveEvaluationStorage",
+    "RetrospectiveHookError",
+    "RetrospectiveHookReplayIdRepository",
+    "RetrospectiveHookReplayRepository",
+    "RetrospectiveHookRequest",
+    "RetrospectiveHookResult",
+    "RetrospectiveHookState",
+    "RetrospectiveHookStatus",
+    "RetrospectiveHookStatusStorage",
     "RetrospectiveJob",
     "RetrospectiveInputError",
     "RetrospectiveInputGateway",
@@ -92,4 +113,5 @@ __all__ = [
     "require_mature_horizon",
     "resolve_evaluation_date",
     "run_backfill",
+    "run_real_retrospective_hook",
 ]
