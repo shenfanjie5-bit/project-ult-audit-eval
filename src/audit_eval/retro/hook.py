@@ -557,23 +557,12 @@ def _validate_lineage_provenance(
     )
     for index, replay_record in enumerate(replay_records):
         _validate_no_forbidden_provenance(
-            {
-                "replay_id": replay_record.replay_id,
-                "manifest_cycle_id": replay_record.manifest_cycle_id,
-                "formal_snapshot_refs": replay_record.formal_snapshot_refs,
-                "graph_snapshot_ref": replay_record.graph_snapshot_ref,
-                "dagster_run_id": replay_record.dagster_run_id,
-            },
+            replay_record.model_dump(mode="json"),
             path=f"$.replay_records[{index}]",
         )
     for index, audit_record in enumerate(audit_records):
         _validate_no_forbidden_provenance(
-            {
-                "record_id": audit_record.record_id,
-                "params_snapshot": audit_record.params_snapshot,
-                "llm_lineage": audit_record.llm_lineage,
-                "degradation_flags": audit_record.degradation_flags,
-            },
+            audit_record.model_dump(mode="json"),
             path=f"$.audit_records[{index}]",
         )
 
@@ -637,6 +626,10 @@ def _evaluate_or_mark_pending(
             f"cycle_id={target.cycle_id!r}, object_ref={target.object_ref!r}, "
             f"horizon={horizon!r}"
         ) from exc
+    _validate_no_forbidden_provenance(
+        asdict(outcome),
+        path="$.market_outcome",
+    )
 
     missing_dependencies = _missing_compute_dependencies(
         replay_record,

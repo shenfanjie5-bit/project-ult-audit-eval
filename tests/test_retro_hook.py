@@ -92,6 +92,26 @@ class MissingOutcomeGateway:
         raise RetrospectiveInputError("real outcome row is not available")
 
 
+class StaticOutcomeGateway:
+    def __init__(self, outcome: MarketOutcome) -> None:
+        self.outcome = outcome
+
+    def list_targets(
+        self,
+        horizon: RetrospectiveHorizon,
+        date_ref: date,
+    ) -> Sequence[RetrospectiveTarget]:
+        return (RetrospectiveTarget(CYCLE_ID, OBJECT_REF),)
+
+    def load_market_outcome(
+        self,
+        target: RetrospectiveTarget,
+        horizon: RetrospectiveHorizon,
+        date_ref: date,
+    ) -> MarketOutcome:
+        return self.outcome
+
+
 def _manifest() -> CyclePublishManifestDraft:
     return CyclePublishManifestDraft(
         published_cycle_id=CYCLE_ID,
@@ -254,6 +274,58 @@ def test_real_retrospective_hook_forbidden_provenance_fails_closed(
         )
 
 
+@pytest.mark.parametrize("marker", ["smoke", "fixture", "historical"])
+def test_real_retrospective_hook_forbidden_audit_payload_provenance_fails_closed(
+    marker: str,
+) -> None:
+    audit_record = _audit_record().model_copy(
+        update={
+            "parsed_result": {
+                "retrospective_seed": {
+                    "trend_score": 1.0,
+                    "risk_score": 2.0,
+                    "baseline_vs_llm_breakdown": {"source": marker},
+                }
+            }
+        }
+    )
+
+    with pytest.raises(RetrospectiveHookError, match=marker):
+        run_real_retrospective_hook(
+            _request(),
+            repository=StaticRepository(
+                replay_records=(_replay_record(),),
+                audit_records=(audit_record,),
+            ),
+        )
+
+
+@pytest.mark.parametrize("marker", ["smoke", "fixture", "historical"])
+def test_real_retrospective_hook_forbidden_outcome_provenance_fails_closed(
+    marker: str,
+) -> None:
+    outcome = MarketOutcome(
+        cycle_id=CYCLE_ID,
+        object_ref=OBJECT_REF,
+        horizon="T+1",
+        realized_trend_score=1.0,
+        realized_risk_score=2.0,
+        hit_rate_rel=None,
+        baseline_vs_llm_breakdown={"source": marker},
+    )
+
+    with pytest.raises(RetrospectiveHookError, match=marker):
+        run_real_retrospective_hook(
+            _request(),
+            repository=StaticRepository(
+                replay_records=(_replay_record(),),
+                audit_records=(_audit_record(),),
+            ),
+            input_gateway=StaticOutcomeGateway(outcome),
+            as_of_date=date(2026, 4, 16),
+        )
+
+
 def test_real_retrospective_hook_durable_duckdb_query_succeeds(tmp_path) -> None:
     db_path = tmp_path / "audit_eval.duckdb"
     storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
@@ -261,16 +333,20 @@ def test_real_retrospective_hook_durable_duckdb_query_succeeds(tmp_path) -> None
     replay_record = _replay_record()
     storage.append_audit_records([audit_record])
     storage.append_replay_records([replay_record])
+    manifest_gateway = StaticManifestGateway()
     status_storage = InMemoryRetrospectiveHookStatusStorage()
 
     result = run_real_retrospective_hook(
         _request(),
         repository=DuckDBReplayRepository(db_path),
+        manifest_gateway=manifest_gateway,
+        require_manifest_gateway=True,
         status_storage=status_storage,
         as_of_date=date(2026, 4, 15),
         recorded_at=datetime(2026, 4, 15, 16, 5, tzinfo=timezone.utc),
     )
 
+    assert manifest_gateway.calls == [CYCLE_ID]
     assert result.replay_ids == (REPLAY_ID,)
     assert result.audit_record_ids == (AUDIT_ID,)
     assert result.completed_evaluation_ids == ()
