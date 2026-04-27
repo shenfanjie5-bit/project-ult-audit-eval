@@ -65,6 +65,16 @@ class MissingManifestGateway:
         raise KeyError(cycle_id)
 
 
+class StaticManifestGateway:
+    def __init__(self, manifest: CyclePublishManifestDraft | None = None) -> None:
+        self.manifest = manifest or _manifest()
+        self.calls: list[str] = []
+
+    def load(self, cycle_id: str) -> CyclePublishManifestDraft:
+        self.calls.append(cycle_id)
+        return self.manifest
+
+
 class MissingOutcomeGateway:
     def list_targets(
         self,
@@ -181,6 +191,50 @@ def test_real_retrospective_hook_missing_replay_or_audit_fails_closed() -> None:
         run_real_retrospective_hook(
             _request(),
             repository=StaticRepository(replay_records=(replay,)),
+        )
+
+
+def test_real_retrospective_hook_can_require_durable_manifest_gateway() -> None:
+    with pytest.raises(RetrospectiveHookError, match="durable cycle_publish_manifest"):
+        run_real_retrospective_hook(
+            _request(),
+            repository=StaticRepository(
+                replay_records=(_replay_record(),),
+                audit_records=(_audit_record(),),
+            ),
+            require_manifest_gateway=True,
+        )
+
+    manifest_gateway = StaticManifestGateway()
+    result = run_real_retrospective_hook(
+        _request(),
+        repository=StaticRepository(
+            replay_records=(_replay_record(),),
+            audit_records=(_audit_record(),),
+        ),
+        manifest_gateway=manifest_gateway,
+        require_manifest_gateway=True,
+        as_of_date=date(2026, 4, 15),
+    )
+
+    assert manifest_gateway.calls == [CYCLE_ID]
+    assert result.manifest_cycle_id == CYCLE_ID
+
+
+def test_real_retrospective_hook_rejects_in_memory_manifest_mismatch_when_durable_required() -> None:
+    stale_manifest = _manifest().model_copy(
+        update={"snapshot_refs": {OBJECT_REF: "data-platform://formal/stale/snapshots/1"}},
+    )
+
+    with pytest.raises(RetrospectiveHookError, match="durable manifest.*snapshot_refs"):
+        run_real_retrospective_hook(
+            _request(manifest=stale_manifest),
+            repository=StaticRepository(
+                replay_records=(_replay_record(),),
+                audit_records=(_audit_record(),),
+            ),
+            manifest_gateway=StaticManifestGateway(),
+            require_manifest_gateway=True,
         )
 
 

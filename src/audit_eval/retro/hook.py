@@ -199,6 +199,7 @@ def run_real_retrospective_hook(
     *,
     repository: RetrospectiveHookReplayRepository,
     manifest_gateway: ManifestGateway | None = None,
+    require_manifest_gateway: bool = False,
     formal_gateway: FormalSnapshotGateway | None = None,
     dagster_gateway: DagsterRunGateway | None = None,
     graph_gateway: GraphSnapshotGateway | None = None,
@@ -220,7 +221,11 @@ def run_real_retrospective_hook(
         request.provenance or {},
         path="$.request.provenance",
     )
-    manifest = _load_manifest(request, manifest_gateway)
+    manifest = _load_manifest(
+        request,
+        manifest_gateway,
+        require_manifest_gateway=require_manifest_gateway,
+    )
     manifest_ref = request.manifest_ref or manifest.published_cycle_id
     _validate_manifest(request, manifest, manifest_ref=manifest_ref)
 
@@ -291,15 +296,37 @@ def run_real_retrospective_hook(
 def _load_manifest(
     request: RetrospectiveHookRequest,
     manifest_gateway: ManifestGateway | None,
+    *,
+    require_manifest_gateway: bool = False,
 ) -> CyclePublishManifestDraft:
+    if require_manifest_gateway:
+        if manifest_gateway is None:
+            raise RetrospectiveHookError(
+                "durable cycle_publish_manifest gateway is required",
+            )
+        manifest = _load_manifest_from_gateway(request, manifest_gateway)
+        if request.manifest is not None:
+            _validate_request_manifest_matches_durable_manifest(
+                request.manifest,
+                manifest,
+            )
+        return manifest
+
     if request.manifest is not None:
         return request.manifest
     if manifest_gateway is None:
         raise RetrospectiveHookError(
             "cycle_publish_manifest missing: no manifest row or gateway was provided"
         )
+    return _load_manifest_from_gateway(request, manifest_gateway)
+
+
+def _load_manifest_from_gateway(
+    request: RetrospectiveHookRequest,
+    manifest_gateway: ManifestGateway,
+) -> CyclePublishManifestDraft:
     try:
-        manifest = manifest_gateway.load(request.manifest_ref or request.cycle_id)
+        manifest = manifest_gateway.load(request.cycle_id)
     except RetrospectiveHookError:
         raise
     except Exception as exc:
@@ -313,6 +340,22 @@ def _load_manifest(
             f"cycle_id={request.cycle_id!r}"
         )
     return manifest
+
+
+def _validate_request_manifest_matches_durable_manifest(
+    request_manifest: CyclePublishManifestDraft,
+    durable_manifest: CyclePublishManifestDraft,
+) -> None:
+    if request_manifest.published_cycle_id != durable_manifest.published_cycle_id:
+        raise RetrospectiveHookError(
+            "cycle_publish_manifest request row does not match durable manifest: "
+            "published_cycle_id",
+        )
+    if dict(request_manifest.snapshot_refs) != dict(durable_manifest.snapshot_refs):
+        raise RetrospectiveHookError(
+            "cycle_publish_manifest request row does not match durable manifest: "
+            "snapshot_refs",
+        )
 
 
 def _validate_manifest(
