@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 import os
+from typing import TypeVar, cast
 
 from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.audit.storage import (
     AuditPersistenceError,
     AuditStorageError,
+    BundleFormalAuditStorageAdapter,
     DEFAULT_MANAGED_AUDIT_TABLE,
     DEFAULT_MANAGED_REPLAY_TABLE,
     FormalAuditStorageAdapter,
@@ -19,6 +21,7 @@ from audit_eval.contracts import AuditRecord, AuditWriteBundle, ReplayRecord
 AUDIT_EVAL_DUCKDB_PATH_ENV = "AUDIT_EVAL_DUCKDB_PATH"
 AUDIT_EVAL_AUDIT_TABLE_ENV = "AUDIT_EVAL_AUDIT_TABLE"
 AUDIT_EVAL_REPLAY_TABLE_ENV = "AUDIT_EVAL_REPLAY_TABLE"
+_T = TypeVar("_T")
 
 
 def get_default_storage_adapter() -> FormalAuditStorageAdapter:
@@ -51,12 +54,7 @@ def persist_audit_records(
     """Persist formal AuditRecord rows through the configured storage adapter."""
 
     bundle = _revalidate_bundle(write_bundle)
-    records = bundle.audit_records
-    for index, record in enumerate(records):
-        assert_no_forbidden_write(
-            record.model_dump(mode="json"),
-            path=f"$.audit_records[{index}]",
-        )
+    records = _validated_audit_records(bundle)
 
     adapter = storage or get_default_storage_adapter()
     return _append_with_persistence_error(
@@ -72,14 +70,7 @@ def persist_replay_records(
     """Persist formal ReplayRecord rows through the configured storage adapter."""
 
     bundle = _revalidate_bundle(write_bundle)
-    _validate_replay_records(bundle.replay_records, bundle.audit_records_by_id())
-
-    records = bundle.replay_records
-    for index, record in enumerate(records):
-        assert_no_forbidden_write(
-            record.model_dump(mode="json"),
-            path=f"$.replay_records[{index}]",
-        )
+    records = _validated_replay_records(bundle)
 
     adapter = storage or get_default_storage_adapter()
     return _append_with_persistence_error(
@@ -88,8 +79,56 @@ def persist_replay_records(
     )
 
 
+def persist_audit_write_bundle(
+    write_bundle: AuditWriteBundle,
+    storage: FormalAuditStorageAdapter | None = None,
+) -> tuple[list[str], list[str]]:
+    """Persist AuditRecord and ReplayRecord rows as one validated write bundle."""
+
+    bundle = _revalidate_bundle(write_bundle)
+    audit_records = _validated_audit_records(bundle)
+    replay_records = _validated_replay_records(bundle)
+    adapter = storage or get_default_storage_adapter()
+    bundle_adapter = cast(BundleFormalAuditStorageAdapter, adapter)
+    append_bundle = getattr(bundle_adapter, "append_audit_write_bundle", None)
+    if not callable(append_bundle):
+        raise AuditStorageError(
+            "retry-safe audit/replay bundle persistence requires a storage adapter "
+            "with append_audit_write_bundle"
+        )
+
+    return _append_with_persistence_error(
+        operation="append_audit_write_bundle",
+        append=lambda: cast(
+            tuple[list[str], list[str]],
+            append_bundle(audit_records, replay_records),
+        ),
+    )
+
+
 def _revalidate_bundle(write_bundle: AuditWriteBundle) -> AuditWriteBundle:
     return AuditWriteBundle.model_validate(write_bundle.model_dump(mode="python"))
+
+
+def _validated_audit_records(bundle: AuditWriteBundle) -> tuple[AuditRecord, ...]:
+    records = tuple(bundle.audit_records)
+    for index, record in enumerate(records):
+        assert_no_forbidden_write(
+            record.model_dump(mode="json"),
+            path=f"$.audit_records[{index}]",
+        )
+    return records
+
+
+def _validated_replay_records(bundle: AuditWriteBundle) -> tuple[ReplayRecord, ...]:
+    records = tuple(bundle.replay_records)
+    _validate_replay_records(records, bundle.audit_records_by_id())
+    for index, record in enumerate(records):
+        assert_no_forbidden_write(
+            record.model_dump(mode="json"),
+            path=f"$.replay_records[{index}]",
+        )
+    return records
 
 
 def _validate_replay_records(
@@ -117,8 +156,8 @@ def _validate_replay_records(
 
 def _append_with_persistence_error(
     operation: str,
-    append: Callable[[], list[str]],
-) -> list[str]:
+    append: Callable[[], _T],
+) -> _T:
     try:
         return append()
     except AuditPersistenceError:
@@ -139,5 +178,6 @@ __all__ = [
     "AuditPersistenceError",
     "get_default_storage_adapter",
     "persist_audit_records",
+    "persist_audit_write_bundle",
     "persist_replay_records",
 ]

@@ -36,6 +36,7 @@ from audit_eval.audit.replay_view import ReplayView
 from audit_eval.audit.storage import (
     AuditPersistenceError,
     AuditStorageError,
+    BundleFormalAuditStorageAdapter,
     DEFAULT_MANAGED_AUDIT_TABLE,
     DEFAULT_MANAGED_REPLAY_TABLE,
     DuckDBFormalAuditStorageAdapter,
@@ -54,6 +55,7 @@ from audit_eval.audit.writer import (
     AUDIT_EVAL_REPLAY_TABLE_ENV,
     get_default_storage_adapter,
     persist_audit_records,
+    persist_audit_write_bundle,
     persist_replay_records,
 )
 
@@ -61,6 +63,7 @@ __all__ = [
     "AuditRecordMissing",
     "AuditPersistenceError",
     "AuditStorageError",
+    "BundleFormalAuditStorageAdapter",
     "DagsterRunGateway",
     "DagsterSummaryMissing",
     "DataPlatformBindingError",
@@ -98,6 +101,7 @@ __all__ = [
     "get_default_storage_adapter",
     "parse_data_platform_snapshot_ref",
     "persist_audit_records",
+    "persist_audit_write_bundle",
     "persist_replay_records",
     "replay_cycle_object",
 ]

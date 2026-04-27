@@ -16,6 +16,21 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_RELATION_PARTS = 3
 DEFAULT_MANAGED_AUDIT_TABLE = "audit_eval.audit_records"
 DEFAULT_MANAGED_REPLAY_TABLE = "audit_eval.replay_records"
+_MANAGED_AUDIT_COLUMNS = (
+    "record_id",
+    "cycle_id",
+    "layer",
+    "object_ref",
+    "payload_json",
+    "created_at",
+)
+_MANAGED_REPLAY_COLUMNS = (
+    "replay_id",
+    "cycle_id",
+    "object_ref",
+    "payload_json",
+    "created_at",
+)
 
 
 class AuditStorageError(RuntimeError):
@@ -50,6 +65,17 @@ class FormalAuditStorageAdapter(Protocol):
         """Append validated formal replay records and return persisted ids."""
 
 
+class BundleFormalAuditStorageAdapter(FormalAuditStorageAdapter, Protocol):
+    """Retry-safe storage boundary for atomic or idempotent audit/replay bundles."""
+
+    def append_audit_write_bundle(
+        self,
+        audit_records: Sequence[AuditRecord],
+        replay_records: Sequence[ReplayRecord],
+    ) -> tuple[list[str], list[str]]:
+        """Persist one validated audit/replay bundle without split-write risk."""
+
+
 class InMemoryFormalAuditStorageAdapter:
     """In-memory formal audit storage adapter for tests and Lite workflows."""
 
@@ -66,6 +92,15 @@ class InMemoryFormalAuditStorageAdapter:
         rows = [record.model_dump(mode="json") for record in records]
         self.replay_rows.extend(rows)
         return [record.replay_id for record in records]
+
+    def append_audit_write_bundle(
+        self,
+        audit_records: Sequence[AuditRecord],
+        replay_records: Sequence[ReplayRecord],
+    ) -> tuple[list[str], list[str]]:
+        audit_ids = self.append_audit_records(audit_records)
+        replay_ids = self.append_replay_records(replay_records)
+        return audit_ids, replay_ids
 
 
 class ManagedDuckDBFormalAuditStorageAdapter:
@@ -87,87 +122,80 @@ class ManagedDuckDBFormalAuditStorageAdapter:
         if not records:
             return []
 
-        rows = [
-            (
-                record.record_id,
-                record.cycle_id,
-                record.layer,
-                record.object_ref,
-                _record_payload_json(record),
-                record.created_at,
-            )
-            for record in records
-        ]
+        rows = _audit_rows(records)
 
         def append(connection: Any) -> None:
-            audit_table = _managed_relation_sql(connection, self._audit_table_parts)
-            replay_table = _managed_relation_sql(connection, self._replay_table_parts)
-            _ensure_managed_tables(
+            self._with_managed_tables(
                 connection,
-                audit_table=audit_table,
-                audit_table_parts=self._audit_table_parts,
-                replay_table=replay_table,
-                replay_table_parts=self._replay_table_parts,
-            )
-            connection.executemany(
-                f"""
-                INSERT INTO {audit_table} (
-                    record_id,
-                    cycle_id,
-                    layer,
-                    object_ref,
-                    payload_json,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                rows,
+                lambda audit_table, replay_table: _append_idempotent_rows(
+                    connection,
+                    table=audit_table,
+                    columns=_MANAGED_AUDIT_COLUMNS,
+                    id_column="record_id",
+                    payload_column="payload_json",
+                    rows=rows,
+                ),
             )
 
-        self._with_connection(append)
+        self._with_connection(lambda connection: _run_in_transaction(connection, append))
         return [record.record_id for record in records]
 
     def append_replay_records(self, records: Sequence[ReplayRecord]) -> list[str]:
         if not records:
             return []
 
-        rows = [
-            (
-                record.replay_id,
-                record.cycle_id,
-                record.object_ref,
-                _record_payload_json(record),
-                record.created_at,
-            )
-            for record in records
-        ]
+        rows = _replay_rows(records)
 
         def append(connection: Any) -> None:
-            audit_table = _managed_relation_sql(connection, self._audit_table_parts)
-            replay_table = _managed_relation_sql(connection, self._replay_table_parts)
-            _ensure_managed_tables(
+            self._with_managed_tables(
                 connection,
-                audit_table=audit_table,
-                audit_table_parts=self._audit_table_parts,
-                replay_table=replay_table,
-                replay_table_parts=self._replay_table_parts,
-            )
-            connection.executemany(
-                f"""
-                INSERT INTO {replay_table} (
-                    replay_id,
-                    cycle_id,
-                    object_ref,
-                    payload_json,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                rows,
+                lambda audit_table, replay_table: _append_idempotent_rows(
+                    connection,
+                    table=replay_table,
+                    columns=_MANAGED_REPLAY_COLUMNS,
+                    id_column="replay_id",
+                    payload_column="payload_json",
+                    rows=rows,
+                ),
             )
 
-        self._with_connection(append)
+        self._with_connection(lambda connection: _run_in_transaction(connection, append))
         return [record.replay_id for record in records]
+
+    def append_audit_write_bundle(
+        self,
+        audit_records: Sequence[AuditRecord],
+        replay_records: Sequence[ReplayRecord],
+    ) -> tuple[list[str], list[str]]:
+        audit_rows = _audit_rows(audit_records)
+        replay_rows = _replay_rows(replay_records)
+
+        def append(connection: Any) -> None:
+            def write_rows(audit_table: str, replay_table: str) -> None:
+                _append_idempotent_rows(
+                    connection,
+                    table=audit_table,
+                    columns=_MANAGED_AUDIT_COLUMNS,
+                    id_column="record_id",
+                    payload_column="payload_json",
+                    rows=audit_rows,
+                )
+                _append_idempotent_rows(
+                    connection,
+                    table=replay_table,
+                    columns=_MANAGED_REPLAY_COLUMNS,
+                    id_column="replay_id",
+                    payload_column="payload_json",
+                    rows=replay_rows,
+                )
+
+            self._with_managed_tables(connection, write_rows)
+
+        self._with_connection(lambda connection: _run_in_transaction(connection, append))
+        return (
+            [record.record_id for record in audit_records],
+            [record.replay_id for record in replay_records],
+        )
 
     def _with_connection(self, callback: Callable[[Any], Any]) -> Any:
         self.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,6 +209,22 @@ class ManagedDuckDBFormalAuditStorageAdapter:
             return callback(connection)
         finally:
             connection.close()
+
+    def _with_managed_tables(
+        self,
+        connection: Any,
+        callback: Callable[[str, str], Any],
+    ) -> Any:
+        audit_table = _managed_relation_sql(connection, self._audit_table_parts)
+        replay_table = _managed_relation_sql(connection, self._replay_table_parts)
+        _ensure_managed_tables(
+            connection,
+            audit_table=audit_table,
+            audit_table_parts=self._audit_table_parts,
+            replay_table=replay_table,
+            replay_table_parts=self._replay_table_parts,
+        )
+        return callback(audit_table, replay_table)
 
 
 class DuckDBReplayRepository:
@@ -415,8 +459,89 @@ def _managed_relation_sql(connection: Any, relation_parts: Sequence[str]) -> str
     if len(relation_parts) == _MAX_RELATION_PARTS:
         return ".".join(_quote_identifier(part) for part in relation_parts)
     database_name = str(connection.execute("SELECT current_database()").fetchone()[0])
-    return ".".join(
-        [_quote_identifier(database_name), *(_quote_identifier(part) for part in relation_parts)]
+    parts = [_quote_identifier(database_name)]
+    parts.extend(_quote_identifier(part) for part in relation_parts)
+    return ".".join(parts)
+
+
+def _audit_rows(records: Sequence[AuditRecord]) -> list[tuple[object, ...]]:
+    return [
+        (
+            record.record_id,
+            record.cycle_id,
+            record.layer,
+            record.object_ref,
+            _record_payload_json(record),
+            record.created_at,
+        )
+        for record in records
+    ]
+
+
+def _replay_rows(records: Sequence[ReplayRecord]) -> list[tuple[object, ...]]:
+    return [
+        (
+            record.replay_id,
+            record.cycle_id,
+            record.object_ref,
+            _record_payload_json(record),
+            record.created_at,
+        )
+        for record in records
+    ]
+
+
+def _run_in_transaction(connection: Any, callback: Callable[[Any], Any]) -> Any:
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        result = callback(connection)
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
+    connection.execute("COMMIT")
+    return result
+
+
+def _append_idempotent_rows(
+    connection: Any,
+    *,
+    table: str,
+    columns: Sequence[str],
+    id_column: str,
+    payload_column: str,
+    rows: Sequence[Sequence[object]],
+) -> None:
+    if not rows:
+        return
+
+    id_index = columns.index(id_column)
+    payload_index = columns.index(payload_column)
+    id_sql = _quote_identifier(id_column)
+    payload_sql = _quote_identifier(payload_column)
+    missing_rows: list[Sequence[object]] = []
+    for row in rows:
+        row_id = str(row[id_index])
+        existing = connection.execute(
+            f"SELECT {payload_sql} FROM {table} WHERE {id_sql} = ?",
+            [row_id],
+        ).fetchone()
+        if existing is None:
+            missing_rows.append(row)
+            continue
+        if existing[0] != row[payload_index]:
+            raise AuditStorageError(
+                f"managed audit storage row {row_id!r} already exists "
+                "with a different payload"
+            )
+
+    if not missing_rows:
+        return
+
+    column_sql = ", ".join(_quote_identifier(column) for column in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    connection.executemany(
+        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+        list(missing_rows),
     )
 
 
@@ -447,6 +572,7 @@ __all__ = [
     "AuditStorageError",
     "DEFAULT_MANAGED_AUDIT_TABLE",
     "DEFAULT_MANAGED_REPLAY_TABLE",
+    "BundleFormalAuditStorageAdapter",
     "DuckDBReplayRepository",
     "DuckDBFormalAuditStorageAdapter",
     "FormalAuditStorageAdapter",

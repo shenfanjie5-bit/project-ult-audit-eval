@@ -16,6 +16,7 @@ from audit_eval.audit import (
     ManagedDuckDBFormalAuditStorageAdapter,
     get_default_storage_adapter,
     persist_audit_records,
+    persist_audit_write_bundle,
     persist_replay_records,
 )
 from audit_eval.audit.storage import FormalAuditStorageAdapter
@@ -57,6 +58,14 @@ class PartialFailure(RuntimeError):
 class FailingAuditStorage:
     def append_audit_records(self, records: Sequence[AuditRecord]) -> list[str]:
         raise PartialFailure()
+
+    def append_replay_records(self, records: Sequence[ReplayRecord]) -> list[str]:
+        return [record.replay_id for record in records]
+
+
+class SplitOnlyStorage:
+    def append_audit_records(self, records: Sequence[AuditRecord]) -> list[str]:
+        return [record.record_id for record in records]
 
     def append_replay_records(self, records: Sequence[ReplayRecord]) -> list[str]:
         return [record.replay_id for record in records]
@@ -114,6 +123,33 @@ def test_persist_replay_records_writes_serialized_rows() -> None:
     assert second_row["graph_snapshot_ref"] == "graph://cycle_20260410/portfolio_graph"
     assert second_row["dagster_run_id"] == "dagster-fixture-run-20260410"
     assert second_row["created_at"] == "2026-04-10T16:09:00Z"
+
+
+def test_persist_audit_write_bundle_validates_replay_before_audit_append() -> None:
+    bundle = _sample_bundle()
+    bad_replay = bundle.replay_records[0].model_copy(
+        update={"audit_record_ids": ["audit-missing"]}
+    )
+    bad_bundle = bundle.model_copy(
+        update={"replay_records": [bad_replay, *bundle.replay_records[1:]]}
+    )
+    storage = CountingStorage()
+
+    with pytest.raises(ValidationError, match="audit-missing"):
+        persist_audit_write_bundle(bad_bundle, storage)
+
+    assert storage.audit_append_calls == 0
+    assert storage.replay_append_calls == 0
+    assert storage.audit_rows == []
+    assert storage.replay_rows == []
+
+
+def test_persist_audit_write_bundle_fails_closed_without_bundle_adapter() -> None:
+    with pytest.raises(AuditStorageError, match="append_audit_write_bundle"):
+        persist_audit_write_bundle(
+            _sample_bundle(),
+            cast(FormalAuditStorageAdapter, SplitOnlyStorage()),
+        )
 
 
 def test_persist_audit_records_rejects_llm_record_missing_replay_field() -> None:
@@ -293,6 +329,103 @@ def test_managed_duckdb_adapter_persists_and_queries_records_by_id(
     assert repository.get_audit_records(audit_ids) == bundle.audit_records
 
 
+def test_managed_duckdb_bundle_persistence_recovers_half_written_audit_rows(
+    tmp_path: Path,
+) -> None:
+    bundle = _sample_bundle()
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+    audit_ids = persist_audit_records(bundle, storage)
+
+    bundle_audit_ids, bundle_replay_ids = persist_audit_write_bundle(bundle, storage)
+    repository = DuckDBReplayRepository(db_path)
+
+    assert bundle_audit_ids == audit_ids
+    assert bundle_replay_ids == [record.replay_id for record in bundle.replay_records]
+    assert repository.get_audit_records(audit_ids) == bundle.audit_records
+    assert repository.get_replay_record_by_id(bundle_replay_ids[0]) == bundle.replay_records[0]
+
+
+def test_managed_duckdb_bundle_persistence_is_idempotent_for_retry(
+    tmp_path: Path,
+) -> None:
+    bundle = _sample_bundle()
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+
+    first = persist_audit_write_bundle(bundle, storage)
+    second = persist_audit_write_bundle(bundle, storage)
+
+    assert second == first
+
+
+def test_managed_duckdb_bundle_persistence_rolls_back_replay_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from audit_eval.audit import storage as storage_module
+
+    bundle = _sample_bundle()
+    db_path = tmp_path / "rollback.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+    original_append = storage_module._append_idempotent_rows
+
+    def fail_replay_append(*args: Any, **kwargs: Any) -> None:
+        if kwargs.get("id_column") == "replay_id":
+            raise RuntimeError("replay storage outage")
+        original_append(*args, **kwargs)
+
+    monkeypatch.setattr(storage_module, "_append_idempotent_rows", fail_replay_append)
+
+    with pytest.raises(AuditPersistenceError, match="replay storage outage"):
+        persist_audit_write_bundle(bundle, storage)
+
+    assert _managed_table_count(db_path, "audit_eval.audit_records") == 0
+    assert _managed_table_count(db_path, "audit_eval.replay_records") == 0
+
+
+def test_managed_duckdb_bundle_persistence_rejects_conflicting_retry_payload(
+    tmp_path: Path,
+) -> None:
+    bundle = _sample_bundle()
+    changed_record = bundle.audit_records[0].model_copy(
+        update={"params_snapshot": {"market": "CN", "as_of": "2026-04-10"}}
+    )
+    conflicting_bundle = bundle.model_copy(
+        update={"audit_records": [changed_record, *bundle.audit_records[1:]]}
+    )
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+
+    persist_audit_write_bundle(bundle, storage)
+
+    with pytest.raises(AuditPersistenceError, match="different payload") as exc_info:
+        persist_audit_write_bundle(conflicting_bundle, storage)
+
+    assert exc_info.value.operation == "append_audit_write_bundle"
+
+
+def test_managed_duckdb_bundle_persistence_rejects_conflicting_replay_payload(
+    tmp_path: Path,
+) -> None:
+    bundle = _sample_bundle()
+    changed_replay = bundle.replay_records[0].model_copy(
+        update={"dagster_run_id": "dagster-run-conflict"}
+    )
+    conflicting_bundle = bundle.model_copy(
+        update={"replay_records": [changed_replay, *bundle.replay_records[1:]]}
+    )
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+
+    persist_audit_write_bundle(bundle, storage)
+
+    with pytest.raises(AuditPersistenceError, match="different payload") as exc_info:
+        persist_audit_write_bundle(conflicting_bundle, storage)
+
+    assert exc_info.value.operation == "append_audit_write_bundle"
+
+
 def test_duckdb_adapter_only_appends_to_configured_tables() -> None:
     bundle = _sample_bundle()
     connection = FakeDuckDBConnection()
@@ -343,3 +476,15 @@ def test_duckdb_adapter_rejects_suspicious_table_names(table_name: str) -> None:
         )
 
     assert connection.calls == []
+
+
+def _managed_table_count(db_path: Path, table_name: str) -> int:
+    import duckdb
+
+    connection = duckdb.connect(str(db_path), read_only=True)
+    try:
+        return int(connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0])
+    except duckdb.CatalogException:
+        return 0
+    finally:
+        connection.close()
