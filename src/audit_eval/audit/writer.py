@@ -3,21 +3,44 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+import os
 
 from audit_eval._boundary import assert_no_forbidden_write
 from audit_eval.audit.storage import (
     AuditPersistenceError,
     AuditStorageError,
+    DEFAULT_MANAGED_AUDIT_TABLE,
+    DEFAULT_MANAGED_REPLAY_TABLE,
     FormalAuditStorageAdapter,
+    ManagedDuckDBFormalAuditStorageAdapter,
 )
 from audit_eval.contracts import AuditRecord, AuditWriteBundle, ReplayRecord
+
+AUDIT_EVAL_DUCKDB_PATH_ENV = "AUDIT_EVAL_DUCKDB_PATH"
+AUDIT_EVAL_AUDIT_TABLE_ENV = "AUDIT_EVAL_AUDIT_TABLE"
+AUDIT_EVAL_REPLAY_TABLE_ENV = "AUDIT_EVAL_REPLAY_TABLE"
 
 
 def get_default_storage_adapter() -> FormalAuditStorageAdapter:
     """Return configured formal audit storage, or fail closed."""
 
+    duckdb_path = os.environ.get(AUDIT_EVAL_DUCKDB_PATH_ENV)
+    if duckdb_path:
+        return ManagedDuckDBFormalAuditStorageAdapter(
+            duckdb_path,
+            audit_table=os.environ.get(
+                AUDIT_EVAL_AUDIT_TABLE_ENV,
+                DEFAULT_MANAGED_AUDIT_TABLE,
+            ),
+            replay_table=os.environ.get(
+                AUDIT_EVAL_REPLAY_TABLE_ENV,
+                DEFAULT_MANAGED_REPLAY_TABLE,
+            ),
+        )
+
     raise AuditStorageError(
-        "No default formal audit storage adapter is configured; pass storage=..."
+        "No default formal audit storage adapter is configured; pass storage=... "
+        f"or set {AUDIT_EVAL_DUCKDB_PATH_ENV}"
     )
 
 
@@ -110,6 +133,9 @@ def _append_with_persistence_error(
 
 
 __all__ = [
+    "AUDIT_EVAL_AUDIT_TABLE_ENV",
+    "AUDIT_EVAL_DUCKDB_PATH_ENV",
+    "AUDIT_EVAL_REPLAY_TABLE_ENV",
     "AuditPersistenceError",
     "get_default_storage_adapter",
     "persist_audit_records",

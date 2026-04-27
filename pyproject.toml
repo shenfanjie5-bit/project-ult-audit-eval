@@ -9,6 +9,7 @@ description = "Audit, replay, retrospective, drift and backtest module for proje
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "duckdb>=1.0,<2",
     "evidently>=0.4",
     "pydantic>=2",
 ]

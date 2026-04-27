@@ -10,8 +10,10 @@ from audit_eval._boundary import BoundaryViolationError
 from audit_eval.audit import (
     AuditPersistenceError,
     AuditStorageError,
+    DuckDBReplayRepository,
     DuckDBFormalAuditStorageAdapter,
     InMemoryFormalAuditStorageAdapter,
+    ManagedDuckDBFormalAuditStorageAdapter,
     get_default_storage_adapter,
     persist_audit_records,
     persist_replay_records,
@@ -254,6 +256,41 @@ def test_adapter_failure_raises_audit_persistence_error() -> None:
 def test_default_storage_fails_closed_without_explicit_configuration() -> None:
     with pytest.raises(AuditStorageError, match="No default formal audit storage"):
         get_default_storage_adapter()
+
+
+def test_default_storage_uses_managed_duckdb_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "audit.duckdb"
+    monkeypatch.setenv("AUDIT_EVAL_DUCKDB_PATH", str(db_path))
+
+    storage = get_default_storage_adapter()
+
+    assert isinstance(storage, ManagedDuckDBFormalAuditStorageAdapter)
+    assert storage.duckdb_path == db_path
+
+
+def test_managed_duckdb_adapter_persists_and_queries_records_by_id(
+    tmp_path: Path,
+) -> None:
+    bundle = _sample_bundle()
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+
+    audit_ids = persist_audit_records(bundle, storage)
+    replay_ids = persist_replay_records(bundle, storage)
+    repository = DuckDBReplayRepository(db_path)
+
+    assert audit_ids == [record.record_id for record in bundle.audit_records]
+    assert replay_ids == [record.replay_id for record in bundle.replay_records]
+    assert repository.get_audit_record_by_id(audit_ids[0]) == bundle.audit_records[0]
+    assert repository.get_replay_record_by_id(replay_ids[1]) == bundle.replay_records[1]
+    assert (
+        repository.get_replay_record("cycle_20260410", "recommendation")
+        == bundle.replay_records[1]
+    )
+    assert repository.get_audit_records(audit_ids) == bundle.audit_records
 
 
 def test_duckdb_adapter_only_appends_to_configured_tables() -> None:
