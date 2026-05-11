@@ -1,7 +1,8 @@
 PYTHON ?= python3
 PYTHONPATH ?= src
+PYTHONDONTWRITEBYTECODE ?= 1
 export PYTHONPATH
-export PYTHONDONTWRITEBYTECODE ?= 1
+export PYTHONDONTWRITEBYTECODE
 
 .PHONY: install install-backtest test test-fast smoke lint typecheck bytecode-clean backtest-smoke ci
 

@@ -11,6 +11,9 @@ side ``public_api_boundary`` compatibility check; see also
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 from audit_eval import public
 
 
@@ -90,13 +93,15 @@ class TestVersionDeclarationDictShape:
 
 class TestInitHookIsNoOp:
     def test_returns_none(self) -> None:
-        assert public.init_hook.initialize(resolved_env={}) is None
+        initialize = cast(Callable[..., object], public.init_hook.initialize)
+
+        assert initialize(resolved_env={}) is None
 
     def test_accepts_arbitrary_env(self) -> None:
+        initialize = cast(Callable[..., object], public.init_hook.initialize)
+
         assert (
-            public.init_hook.initialize(
-                resolved_env={"PG_HOST": "localhost", "PG_PORT": "5432"}
-            )
+            initialize(resolved_env={"PG_HOST": "localhost", "PG_PORT": "5432"})
             is None
         )
 
