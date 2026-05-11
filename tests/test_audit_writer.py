@@ -483,7 +483,9 @@ def _managed_table_count(db_path: Path, table_name: str) -> int:
 
     connection = duckdb.connect(str(db_path), read_only=True)
     try:
-        return int(connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0])
+        row = connection.execute(f"SELECT count(*) FROM {table_name}").fetchone()
+        assert row is not None
+        return int(row[0])
     except duckdb.CatalogException:
         return 0
     finally:

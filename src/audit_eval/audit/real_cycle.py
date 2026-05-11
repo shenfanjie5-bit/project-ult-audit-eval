@@ -17,21 +17,36 @@ class DataPlatformBindingError(RuntimeError):
 
 
 class _FormalSnapshot(Protocol):
-    table: str
-    snapshot_id: int
+    @property
+    def table(self) -> str: ...
+
+    @property
+    def snapshot_id(self) -> int: ...
 
 
 class _CyclePublishManifest(Protocol):
-    published_cycle_id: str
-    published_at: datetime
-    formal_table_snapshots: Mapping[str, _FormalSnapshot]
+    @property
+    def published_cycle_id(self) -> str: ...
+
+    @property
+    def published_at(self) -> datetime: ...
+
+    @property
+    def formal_table_snapshots(self) -> Mapping[str, _FormalSnapshot]: ...
 
 
 class _FormalObject(Protocol):
-    cycle_id: str
-    object_type: str
-    snapshot_id: int
-    payload: Any
+    @property
+    def cycle_id(self) -> str: ...
+
+    @property
+    def object_type(self) -> str: ...
+
+    @property
+    def snapshot_id(self) -> int: ...
+
+    @property
+    def payload(self) -> Any: ...
 
 
 def formal_object_ref(table_identifier: str) -> str:
@@ -121,7 +136,7 @@ class DataPlatformManifestGateway:
         if self._load_manifest is not None:
             return self._load_manifest(cycle_id)
         try:
-            from data_platform.cycle import get_publish_manifest
+            from data_platform.cycle import get_publish_manifest  # type: ignore[import-not-found]
         except ImportError as exc:
             raise DataPlatformBindingError(
                 "data-platform is not importable; install it or set PYTHONPATH"
@@ -164,7 +179,7 @@ class DataPlatformFormalSnapshotGateway:
         if self._load_formal_by_snapshot is not None:
             return self._load_formal_by_snapshot(snapshot_id, object_type)
         try:
-            from data_platform.serving.formal import get_formal_by_snapshot
+            from data_platform.serving.formal import get_formal_by_snapshot  # type: ignore[import-not-found]
         except ImportError as exc:
             raise DataPlatformBindingError(
                 "data-platform is not importable; install it or set PYTHONPATH"
